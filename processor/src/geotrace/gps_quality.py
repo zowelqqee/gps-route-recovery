@@ -123,6 +123,7 @@ class GPSQualityMonitor:
         self.last_accepted: Optional[LocationSample] = None
         self.last_accepted_xy: Optional[tuple[float, float]] = None
         self.last_seen_time: Optional[float] = None
+        self._untrusted_since: Optional[float] = None
         self.history: list[GateResult] = []
         self._bootstrap_done = False
 
@@ -139,6 +140,7 @@ class GPSQualityMonitor:
         if now - self.last_seen_time > self.cfg.lost_gap_s and self.state is not GPSState.LOST:
             self.state = GPSState.LOST
             self.consecutive_good = 0
+            self._untrusted_since = now
             self.history.append(
                 GateResult(
                     accepted=False,
@@ -179,11 +181,6 @@ class GPSQualityMonitor:
         if not sample.is_usable:
             reasons.append("invalid_fix")
 
-        if sample.horizontal_accuracy is not None and (
-            sample.horizontal_accuracy > cfg.max_horizontal_accuracy_m
-        ):
-            reasons.append("accuracy_too_poor")
-
         if (
             not cfg.allow_simulated_fixes
             and sample.source_information
@@ -204,25 +201,31 @@ class GPSQualityMonitor:
             if not passed:
                 reasons.append("physical_gate")
 
-        # --- Gates that compare the fix with the filter's own prediction.
-        #
-        # These are only meaningful while the filter is actually tracking. Once
-        # GPS has been LOST for a while the dead-reckoned position, heading and
-        # speed have all drifted, and testing returning fixes against them
-        # rejects precisely the fixes needed to recover - the filter would
-        # defend its own error forever. In LOST / RECOVERING the fixes are
-        # instead checked against each other, which is what the specification
-        # means by "several consecutive consistent points".
+        # --- Innovation gate: GPS is a position measurement; the IMU is the
+        # prediction. This test is intentionally independent of the road graph.
+        # When IMU-only tracking has lasted a while, its uncertainty is included
+        # in S rather than disabling the test or declaring a GPS point invalid.
         tracking = self.state in (GPSState.TRUSTED, GPSState.SUSPECT)
 
+        if predicted_xy is not None and covariance is not None:
+            residual = np.asarray(measured_xy, dtype=float) - np.asarray(predicted_xy, dtype=float)
+            P_xy = np.asarray(covariance, dtype=float)[:2, :2].copy()
+            if not tracking:
+                since = 0.0 if self._untrusted_since is None else max(
+                    0.0, sample.monotonic_time - self._untrusted_since
+                )
+                drift_sigma = (
+                    cfg.recovery_position_sigma_m
+                    + cfg.recovery_position_sigma_growth_mps * since
+                )
+                P_xy += np.eye(2) * (drift_sigma**2)
+            S = P_xy + np.eye(2) * (sigma**2)
+            passed, d2 = mahalanobis_gate(residual, S, cfg.mahalanobis_threshold)
+            result.mahalanobis = d2
+            if not passed:
+                reasons.append("mahalanobis_gate")
+
         if tracking:
-            if predicted_xy is not None and covariance is not None:
-                residual = np.asarray(measured_xy, dtype=float) - np.asarray(predicted_xy, dtype=float)
-                S = np.asarray(covariance, dtype=float)[:2, :2] + np.eye(2) * (sigma**2)
-                passed, d2 = mahalanobis_gate(residual, S, cfg.mahalanobis_threshold)
-                result.mahalanobis = d2
-                if not passed:
-                    reasons.append("mahalanobis_gate")
 
             if sample.has_valid_speed and self._bootstrap_done:
                 if abs(float(sample.speed or 0.0) - predicted_speed) > cfg.max_speed_mismatch_ms:
@@ -243,13 +246,6 @@ class GPSQualityMonitor:
         else:
             reasons.extend(self._fix_to_fix_reasons(sample, measured_xy))
 
-        # The road graph is a routing prior, not an independent GPS sensor.
-        # An extract can be stale, clipped or simply omit a service road; using
-        # its coverage as a hard gate turns a coherent, live GPS stream into a
-        # fictitious outage.  Keep ``road_distance_m`` on GateResult for
-        # diagnostics and graph-coverage warnings, but make trust depend only
-        # on observations that can actually contradict the GPS fix.
-
         result.accepted = not reasons
         result.reasons = reasons
         self._advance(result, sample, measured_xy)
@@ -259,7 +255,10 @@ class GPSQualityMonitor:
         return result
 
     def _advance(
-        self, result: GateResult, sample: LocationSample, measured_xy: Sequence[float]
+        self,
+        result: GateResult,
+        sample: LocationSample,
+        measured_xy: Sequence[float],
     ) -> None:
         cfg = self.cfg
         if result.accepted:
@@ -280,11 +279,13 @@ class GPSQualityMonitor:
             if self.consecutive_good >= cfg.recover_count:
                 self.state = GPSState.TRUSTED
                 self._bootstrap_done = True
+                self._untrusted_since = None
         else:
             self.consecutive_good = 0
             self.consecutive_bad += 1
             if self.state is GPSState.TRUSTED:
                 self.state = GPSState.SUSPECT
+                self._untrusted_since = sample.monotonic_time
             elif self.state is GPSState.SUSPECT and self.consecutive_bad >= cfg.suspect_to_lost_count:
                 self.state = GPSState.LOST
             elif self.state is GPSState.RECOVERING:

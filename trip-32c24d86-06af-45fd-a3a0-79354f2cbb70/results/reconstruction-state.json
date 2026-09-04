@@ -27,7 +27,8 @@
       "recovery_course_error_deg": 55.0,
       "recovery_speed_mismatch_ms": 7.0,
       "recovery_min_step_m": 8.0,
-      "max_distance_to_road_m": 60.0,
+      "recovery_position_sigma_m": 30.0,
+      "recovery_position_sigma_growth_mps": 3.0,
       "max_median_track_to_road_m": 25.0,
       "suspect_to_lost_count": 3,
       "recover_count": 4,
@@ -55,7 +56,11 @@
       "dead_end_weight": 1e-09,
       "inject_fraction": 0.02,
       "divergence_likelihood": 1e-06,
-      "heading_snap_gain": 0.35
+      "heading_snap_gain": 0.35,
+      "outage_map_assist_min_probability": 0.85,
+      "outage_map_assist_max_spread_m": 45.0,
+      "outage_map_assist_max_offset_m": 120.0,
+      "outage_map_assist_gain": 0.45
     },
     "polygon": {
       "confidence": 0.95,

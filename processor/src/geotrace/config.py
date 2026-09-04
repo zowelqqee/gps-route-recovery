@@ -75,7 +75,13 @@ class GPSQualityConfig:
     """GPS trust state machine."""
 
     max_horizontal_accuracy_m: float = 50.0
-    """Reported accuracy worse than this is never treated as TRUSTED."""
+    """Fallback sigma when CoreLocation omits an accuracy value.
+
+    A large reported accuracy is not, by itself, evidence of a false position:
+    it is represented as a larger measurement covariance in the EKF gate and
+    update.  In particular it must not make a continuous real GPS trace turn
+    into an outage.
+    """
 
     physical_margin_m: float = 25.0
     """`m` in d_max = v*dt + 0.5*a_max*dt^2 + m. Absorbs GPS noise on both the
@@ -84,11 +90,10 @@ class GPSQualityConfig:
     mahalanobis_threshold: float = 9.21
     """chi^2 with 2 dof at p = 0.99.
 
-    Applied only while GPS is TRUSTED or SUSPECT, i.e. while the filter is
-    actually tracking and its predicted position means something. In LOST and
-    RECOVERING the prediction has drifted and gating against it would reject
-    exactly the fixes needed to recover, so trust is rebuilt from the mutual
-    consistency of several consecutive fixes instead."""
+    Applied to every usable fix. During an IMU-only interval its innovation
+    covariance is deliberately expanded to represent dead-reckoning drift, so
+    a plausible returning fix can recover the filter while a teleport still
+    fails the same statistical test."""
 
     min_speed_for_course_ms: float = 3.0
     """Below this speed CoreLocation course is noise and is ignored."""
@@ -107,10 +112,17 @@ class GPSQualityConfig:
     recovery_min_step_m: float = 8.0
     """Below this fix-to-fix distance the implied bearing is meaningless."""
 
-    max_distance_to_road_m: float = 60.0
-    """Diagnostic graph-coverage threshold. A fix beyond it is reported as
-    outside the road prior, but is never rejected solely for that reason:
-    incomplete or stale map data must not manufacture a GPS outage."""
+    recovery_position_sigma_m: float = 30.0
+    """Additional one-sigma dead-reckoning uncertainty at the start of a GPS
+    recovery interval, in metres."""
+
+    recovery_position_sigma_growth_mps: float = 3.0
+    """Additional one-sigma uncertainty growth while GPS is untrusted.
+
+    This is a conservative representation of uncalibrated IMU drift used only
+    in the innovation gate. The EKF is re-anchored after consecutive coherent
+    fixes restore trust.
+    """
 
     max_median_track_to_road_m: float = 25.0
     """Whole-track check, not a per-fix one: if the *median* distance from the
@@ -118,8 +130,8 @@ class GPSQualityConfig:
     the roads that were driven and the run is warned about.
 
     A well-matched graph gives a median of a couple of metres; a graph for the
-    wrong area gives tens. Reusing max_distance_to_road_m here would be too
-    lenient, because that is an outlier threshold for a single fix."""
+    wrong area gives tens. This is report-only metadata and never participates
+    in a per-fix GPS decision."""
 
     suspect_to_lost_count: int = 3
     """Consecutive rejected fixes that push SUSPECT -> LOST."""
@@ -216,6 +228,23 @@ class ParticleFilterConfig:
     heading_snap_gain: float = 0.35
     """After a junction the particle heading is pulled towards the new edge
     bearing by this gain; the gyro still drives the rest."""
+
+    outage_map_assist_min_probability: float = 0.85
+    """Minimum posterior mass of one road hypothesis before the map may softly
+    assist the displayed IMU route during a GPS outage."""
+
+    outage_map_assist_max_spread_m: float = 45.0
+    """The dominant graph hypothesis must remain spatially compact.  A single
+    connected OSM component can still contain several junction choices, so its
+    probability alone is not sufficient evidence."""
+
+    outage_map_assist_max_offset_m: float = 120.0
+    """Never let a map hypothesis pull the EKF estimate across the city, even
+    when the graph itself happens to be topologically unambiguous."""
+
+    outage_map_assist_gain: float = 0.45
+    """Fraction of the validated map correction blended into the IMU estimate.
+    The road graph is a soft prior, not an independent position measurement."""
 
 
 

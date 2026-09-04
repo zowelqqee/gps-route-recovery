@@ -209,10 +209,11 @@ def test_a_false_fix_during_recovery_drops_back_to_lost() -> None:
     assert monitor.state is GPSState.LOST
 
 
-def test_poor_accuracy_alone_is_rejected() -> None:
+def test_poor_accuracy_becomes_measurement_uncertainty_not_a_rejection() -> None:
     monitor = GPSQualityMonitor(CFG)
     result = monitor.update(fix(0.0, accuracy=CFG.max_horizontal_accuracy_m + 10), (0.0, 0.0))
-    assert not result.accepted and "accuracy_too_poor" in result.reasons
+    assert result.accepted
+    assert result.sigma_m == pytest.approx(CFG.max_horizontal_accuracy_m + 10)
 
 
 def test_good_accuracy_is_not_sufficient_on_its_own() -> None:
@@ -225,16 +226,32 @@ def test_good_accuracy_is_not_sufficient_on_its_own() -> None:
     assert result.sigma_m == pytest.approx(5.0), "the fix claimed to be accurate"
 
 
-def test_a_coherent_fix_outside_graph_coverage_is_not_rejected() -> None:
-    """A stale or clipped road graph cannot manufacture a GPS outage."""
+def test_a_continuous_fix_outside_graph_coverage_is_not_rejected() -> None:
+    """A real drive may cross a stale or clipped OSM segment."""
     monitor = GPSQualityMonitor(CFG)
     t = _promote_to_trusted(monitor)
+    off_graph_distance_m = 110.0
     result = monitor.update(
         fix(t + 1), (35.0, 5.0), predicted_speed=10.0,
-        road_distance_m=CFG.max_distance_to_road_m + 50.0,
+        road_distance_m=off_graph_distance_m,
     )
     assert result.accepted
-    assert result.road_distance_m == pytest.approx(CFG.max_distance_to_road_m + 50.0)
+    assert result.road_distance_m == pytest.approx(off_graph_distance_m)
+
+
+def test_far_road_fix_can_recover_when_ekf_innovation_is_plausible() -> None:
+    """OSM distance is diagnostic metadata, never a GPS acceptance gate."""
+    monitor = GPSQualityMonitor(CFG)
+    t = _promote_to_trusted(monitor)
+    monitor.state = GPSState.LOST
+    monitor._untrusted_since = t
+    result = monitor.update(
+        fix(t + 1), (35.0, 5.0), predicted_speed=10.0,
+        predicted_xy=(0.0, 0.0), covariance=np.eye(6) * 100.0,
+        road_distance_m=5_000.0,
+    )
+    assert result.accepted
+    assert "far_from_road" not in result.reasons
 
 
 def test_software_simulated_fixes_are_rejected() -> None:
@@ -278,21 +295,18 @@ def test_invalid_fixes_are_refused() -> None:
     assert not monitor.update(bad, (0.0, 0.0)).accepted
 
 
-def test_the_mahalanobis_gate_is_dropped_once_the_filter_has_lost_track() -> None:
-    """A dead-reckoning solution that has run free for a minute is not a valid
-    reference. Gating returning fixes against it would make the filter defend
-    its own drift and never recover."""
+def test_mahalanobis_gate_remains_active_after_loss_with_expanded_uncertainty() -> None:
+    """Recovery keeps the same statistical test, but represents IMU drift in S."""
     monitor = GPSQualityMonitor(CFG)
     _promote_to_trusted(monitor)
     monitor.note_gap(100.0)
     assert monitor.state is GPSState.LOST
     P = np.eye(6) * 100.0
-    # 80 m from the prediction: far outside the 9.21 gate a tracking filter
-    # would apply, but the gate is not applied at all in LOST.
+    # 80 m is plausible after the loss because recovery uncertainty expands S.
     result = monitor.update(
         fix(101.0), (80.0, 0.0), predicted_xy=(0.0, 0.0), covariance=P, predicted_speed=10.0
     )
-    assert result.mahalanobis is None
+    assert result.mahalanobis is not None
     assert "mahalanobis_gate" not in result.reasons
     assert result.accepted
 

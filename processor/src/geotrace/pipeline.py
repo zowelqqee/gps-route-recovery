@@ -40,11 +40,7 @@ from geotrace.parity_rng import make_rng
 from geotrace.motion_model import build_imu_stream, estimate_initial_biases
 from geotrace.particle_filter import RoadParticleFilter
 from geotrace.parking_tracker import ParkingResult, ParkingTracker
-from geotrace.polygons import (
-    UncertaintySet,
-    branch_aware_estimate,
-    build_uncertainty_set,
-)
+from geotrace.polygons import UncertaintySet, branch_aware_estimate, build_uncertainty_set
 from geotrace.road_graph import RoadNetwork
 from geotrace.road_tracker import RoadTracker
 
@@ -265,6 +261,7 @@ def _run_tracking_pipeline(
     fix_cursor = 0
     previous_state = monitor.state
     reanchors: list[dict[str, Any]] = []
+    map_assists: list[dict[str, Any]] = []
     next_output = trip.t0
     controls = imu.controls if imu.controls else _synthetic_controls(fixes, cfg)
 
@@ -275,13 +272,14 @@ def _run_tracking_pipeline(
         # moving; otherwise it just means steady cruising.
         #
         # GPS trust is deliberately evaluated before the road filter advances.
-        # During LOST / RECOVERING the route shown to the user is pure IMU
-        # dead reckoning; a map prior is not allowed to select a street.
         if control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
             ekf.zero_velocity_update()
 
         monitor.note_gap(t)
-        if pf is not None and pf.initialized and monitor.state is GPSState.TRUSTED:
+        if pf is not None and pf.initialized:
+            # The particle cloud keeps moving through the road graph during an
+            # outage, but is never reweighted by absent or rejected GPS.  It is
+            # therefore a causal map prior, not retrospective map matching.
             pf.predict(control.a_world, control.yaw_rate, control.dt)
             if control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
                 pf.zero_velocity_update(cfg.motion.zupt_max_speed_ms)
@@ -359,48 +357,53 @@ def _run_tracking_pipeline(
                             speed=ekf.speed,
                             sigma=sigma,
                         )
-                ekf.update_position(xy, sigma)
-                if fix.has_valid_speed:
-                    ekf.update_speed(float(fix.speed or 0.0), max(1.0, float(fix.speed_accuracy or 1.0)))
-                if (
-                    fix.has_valid_course
-                    and fix.has_valid_speed
-                    and float(fix.speed or 0.0) >= cfg.gps.min_speed_for_course_ms
-                ):
-                    ekf.update_heading(course_to_heading(float(fix.course or 0.0)), math.radians(25.0))
-                last_known_xy = xy
+                # A RECOVERING point is evidence for the GPS state machine,
+                # not yet a position measurement.  Applying it here caused a
+                # kilometre-scale jump from stale inertial position to the
+                # first recovery candidate before the required consecutive
+                # confirmations had established TRUSTED GPS.
                 if monitor.state is GPSState.TRUSTED:
+                    ekf.update_position(xy, sigma)
+                    if fix.has_valid_speed:
+                        ekf.update_speed(
+                            float(fix.speed or 0.0), max(1.0, float(fix.speed_accuracy or 1.0))
+                        )
+                    if (
+                        fix.has_valid_course
+                        and fix.has_valid_speed
+                        and float(fix.speed or 0.0) >= cfg.gps.min_speed_for_course_ms
+                    ):
+                        ekf.update_heading(course_to_heading(float(fix.course or 0.0)), math.radians(25.0))
+                    last_known_xy = xy
                     last_trusted_t = fix.monotonic_time
-
-                if pf is not None:
-                    if not pf.initialized and monitor.state is GPSState.TRUSTED:
-                        pf.initialize(
-                            xy,
-                            heading=ekf.heading,
-                            speed=ekf.speed,
-                            accel_bias=bias_a,
-                            gyro_bias=bias_w,
-                            position_sigma=sigma,
-                        )
-                    elif pf.initialized and monitor.state is GPSState.TRUSTED:
-                        pf.update_weights(
-                            gps_xy=xy,
-                            gps_sigma=sigma,
-                            gps_course_rad=(
-                                course_to_heading(float(fix.course or 0.0))
-                                if fix.has_valid_course
-                                else None
-                            ),
-                            gps_speed=float(fix.speed) if fix.has_valid_speed else None,
-                        )
-                        if pf.has_diverged():
-                            # Every particle is impossible under this fix: the
-                            # filter followed the wrong branch. Re-seed rather
-                            # than carry a confidently wrong belief forward.
-                            pf.reinitialize(xy, ekf.heading, ekf.speed, sigma)
+                    if pf is not None:
+                        if not pf.initialized:
+                            pf.initialize(
+                                xy,
+                                heading=ekf.heading,
+                                speed=ekf.speed,
+                                accel_bias=bias_a,
+                                gyro_bias=bias_w,
+                                position_sigma=sigma,
+                            )
                         else:
-                            pf.maybe_resample()
-                            pf.inject_from_fix(xy, ekf.heading, ekf.speed, sigma)
+                            pf.update_weights(
+                                gps_xy=xy,
+                                gps_sigma=sigma,
+                                gps_course_rad=(
+                                    course_to_heading(float(fix.course or 0.0))
+                                    if fix.has_valid_course
+                                    else None
+                                ),
+                                gps_speed=float(fix.speed) if fix.has_valid_speed else None,
+                            )
+                            if pf.has_diverged():
+                                # Every particle is impossible under this fix:
+                                # the filter followed the wrong branch.
+                                pf.reinitialize(xy, ekf.heading, ekf.speed, sigma)
+                            else:
+                                pf.maybe_resample()
+                                pf.inject_from_fix(xy, ekf.heading, ekf.speed, sigma)
             else:
                 rejected_points.append(record)
 
@@ -423,35 +426,46 @@ def _run_tracking_pipeline(
                 if monitor.state is GPSState.TRUSTED:
                     pf.update_weights()
                     pf.maybe_resample()
-                    snapshot = pf.snapshot(
-                        t,
-                        gps_state=monitor.state.value,
-                        seconds_since_trusted=since_trusted,
-                    )
-                    unc = build_uncertainty_set(
-                        network,  # type: ignore[arg-type]
-                        pf.edge_idx,
-                        pf.s,
-                        pf.w,
-                        cfg.polygon,
-                        t=t,
-                        gps_state=monitor.state.value,
-                        seconds_since_trusted=since_trusted,
-                    )
-                    uncertainty.append(unc)
-                    estimate = branch_aware_estimate(network, unc, pf.edge_idx, pf.s, pf.w)  # type: ignore[arg-type]
-                    tracks["road_particle_filter"].add(t, estimate)
-                else:
-                    # No GPS trust: the route is the IMU integration itself.
-                    # Do not reweight or resample particles on graph topology;
-                    # that would manufacture a confident but arbitrary branch.
-                    tracks["road_particle_filter"].add(t, ekf.position)
-                    uncertainty.append(
-                        _circular_uncertainty(
-                            t, ekf.position, ekf, cfg, monitor.state.value,
-                            since_trusted, "imu_dead_reckoning",
+                pf.snapshot(
+                    t,
+                    gps_state=monitor.state.value,
+                    seconds_since_trusted=since_trusted,
+                )
+                unc = build_uncertainty_set(
+                    network,  # type: ignore[arg-type]
+                    pf.edge_idx,
+                    pf.s,
+                    pf.w,
+                    cfg.polygon,
+                    t=t,
+                    gps_state=monitor.state.value,
+                    seconds_since_trusted=since_trusted,
+                )
+                uncertainty.append(unc)
+                displayed_xy = ekf.position
+                if monitor.state is not GPSState.TRUSTED:
+                    assist = _outage_map_assist(network, pf, unc, ekf.position, cfg)
+                    if assist is not None:
+                        displayed_xy, map_xy, probability, spread = assist
+                        map_assists.append(
+                            {
+                                "t": round(t - trip.t0, 2),
+                                "probability": round(probability, 3),
+                                "spread_m": round(spread, 2),
+                                "map_offset_m": round(float(math.dist(map_xy, ekf.position)), 2),
+                            }
                         )
+                tracks["road_particle_filter"].add(t, displayed_xy)
+            elif algorithm == "road_particle_filter":
+                # Bootstrap before the first trusted GPS correction has no
+                # particle cloud yet, but it still has an EKF trajectory.
+                tracks["road_particle_filter"].add(t, ekf.position)
+                uncertainty.append(
+                    _circular_uncertainty(
+                        t, ekf.position, ekf, cfg, monitor.state.value,
+                        since_trusted, "imu_dead_reckoning",
                     )
+                )
             elif algorithm != "road_particle_filter":
                 uncertainty.append(
                     _circular_uncertainty(
@@ -513,6 +527,7 @@ def _run_tracking_pipeline(
         "rejected_fixes": rejected_points,
         "ekf": {"skipped_gaps": ekf.skipped_gaps, "final_state": ekf.state_json()},
         "reanchors": reanchors,
+        "outage_map_assists": map_assists,
         "runtime_s": round(elapsed, 3),
         "road_graph": (
             None
@@ -622,6 +637,45 @@ def _synthetic_controls(fixes: Sequence[LocationSample], cfg: Config) -> list[An
     return [ImuControl(t=t0 + dt * (i + 1), dt=dt, a_long=0.0, yaw_rate=0.0) for i in range(steps)]
 
 
+def _outage_map_assist(
+    network: RoadNetwork,
+    pf: RoadParticleFilter,
+    uncertainty: UncertaintySet,
+    ekf_xy: Sequence[float],
+    cfg: Config,
+) -> Optional[tuple[np.ndarray, tuple[float, float], float, float]]:
+    """Return a bounded, soft map correction only for a compact hypothesis.
+
+    This deliberately has three independent checks. A connected OSM corridor is
+    not enough: it can cover more than one plausible turn. The graph is allowed
+    to nudge an IMU prediction, never replace it or bridge an arbitrary gap.
+    """
+    best = uncertainty.best
+    if best is None or best.particle_indices.size == 0:
+        return None
+    probability = float(best.probability)
+    if probability < cfg.pf.outage_map_assist_min_probability:
+        return None
+
+    member = best.particle_indices
+    positions = network.positions_fast(pf.edge_idx[member], pf.s[member])
+    weights = np.asarray(pf.w[member], dtype=float)
+    if weights.sum() <= 0:
+        return None
+    centre = np.average(positions, axis=0, weights=weights)
+    spread = math.sqrt(float(np.average(np.sum((positions - centre) ** 2, axis=1), weights=weights)))
+    if spread > cfg.pf.outage_map_assist_max_spread_m:
+        return None
+
+    map_xy = branch_aware_estimate(network, uncertainty, pf.edge_idx, pf.s, pf.w)
+    offset = math.dist(map_xy, ekf_xy)
+    if offset > cfg.pf.outage_map_assist_max_offset_m:
+        return None
+    gain = cfg.pf.outage_map_assist_gain
+    assisted = (1.0 - gain) * np.asarray(ekf_xy, dtype=float) + gain * np.asarray(map_xy)
+    return assisted, map_xy, probability, spread
+
+
 def _circular_uncertainty(
     t: float,
     xy: Sequence[float],
@@ -648,7 +702,15 @@ def _circular_uncertainty(
             2000.0,
         )
     else:
-        radius = min(cfg.polygon.r_min_m + cfg.motion.max_speed_ms * since_trusted, 3000.0)
+        radius = min(
+            cfg.polygon.r_min_m
+            + cfg.polygon.k_sigma
+            * (
+                cfg.polygon.cross_track_sigma_base_m
+                + cfg.polygon.cross_track_sigma_per_s * since_trusted
+            ),
+            cfg.polygon.max_radius_m,
+        )
     geometry = Point(float(xy[0]), float(xy[1])).buffer(radius)
     component = BranchComponent(
         component_id="branch-01",

@@ -76,30 +76,44 @@ def test_the_outage_is_detected(fork_network: RoadNetwork) -> None:
     assert window["end_s"] - window["start_s"] > 30.0
 
 
-def test_gps_outage_does_not_emit_a_road_particle_branch_choice(
+def test_gps_outage_keeps_a_causal_road_hypothesis(
     fork_network: RoadNetwork,
 ) -> None:
-    """The primary route is IMU-only while GPS is not trusted."""
+    """The map prior propagates during the outage but receives no GPS update."""
     _broken, _cfg, result = _run(fork_network)
     pf = result.particle_filter
-    assert all(s.gps_state == "TRUSTED" for s in pf.result.snapshots)
+    assert any(s.gps_state != "TRUSTED" for s in pf.result.snapshots)
 
     inertial = [u for u in result.uncertainty if u.gps_state != "TRUSTED"]
     assert inertial
-    assert all(u.n_particles == 0 for u in inertial)
+    assert any(u.n_particles > 0 for u in inertial)
 
 
-def test_imu_uncertainty_expands_without_a_map_branch(fork_network: RoadNetwork) -> None:
-    _broken, _cfg, result = _run(fork_network)
-    inertial = [u for u in result.uncertainty if u.gps_state != "TRUSTED"]
-    assert inertial[-1].total_area_m2 > inertial[0].total_area_m2
-    assert all(len(u.components) == 1 for u in inertial)
+def test_imu_uncertainty_keeps_road_branches_during_an_outage(fork_network: RoadNetwork) -> None:
+    _broken, cfg, result = _run(fork_network)
+    inertial = [
+        u for u in result.uncertainty if u.gps_state != "TRUSTED" and u.n_particles > 0
+    ]
+    assert inertial[-1].total_area_m2 > 0
+    assert all(u.n_particles == cfg.pf.n_particles for u in inertial)
 
 
 def test_reanchor_starts_a_new_visible_route_segment(grid_network: RoadNetwork) -> None:
     _broken, _cfg, result = _composite_run(grid_network)
     assert result.diagnostics["reanchors"]
     assert result.primary.to_geojson(result.frame)["geometry"]["type"] == "MultiLineString"
+
+
+def test_recovery_candidates_do_not_draw_a_cross_city_jump(grid_network: RoadNetwork) -> None:
+    """Only TRUSTED GPS may correct a track; recovery starts a new segment."""
+    _broken, _cfg, result = _composite_run(grid_network)
+    track = result.primary
+    starts = [*track.segment_starts, len(track.xy)]
+    for start, end in zip(starts, starts[1:]):
+        points = track.array[start:end]
+        if len(points) > 1:
+            steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+            assert float(steps.max()) < 100.0
 
 
 def test_the_reconstructed_route_ends_on_the_driven_branch(
@@ -138,11 +152,23 @@ def test_the_run_is_reproducible(fork_network: RoadNetwork) -> None:
     assert np.array_equal(a, b)
 
 
+def test_map_assistance_is_strictly_bounded(
+    fork_network: RoadNetwork,
+) -> None:
+    """A road prior can nudge, but can never create a cross-city route jump."""
+    _broken, cfg, result = _run(fork_network, seed=7)
+    delta = np.linalg.norm(result.primary.array - result.tracks["ekf_dead_reckoning"].array, axis=1)
+    assert float(delta.max()) <= (
+        cfg.pf.outage_map_assist_gain * cfg.pf.outage_map_assist_max_offset_m + 1e-6
+    )
+
+
 def test_a_different_seed_changes_the_particle_realisation(
     fork_network: RoadNetwork,
 ) -> None:
-    a = _run(fork_network, seed=7)[2].primary.array
-    b = _run(fork_network, seed=8)[2].primary.array
+    """The map prior remains stochastic, but it is no longer the route sensor."""
+    a = _run(fork_network, seed=7)[2].particle_filter.snapshot(0.0).weights
+    b = _run(fork_network, seed=8)[2].particle_filter.snapshot(0.0).weights
     assert not np.array_equal(a, b)
 
 
