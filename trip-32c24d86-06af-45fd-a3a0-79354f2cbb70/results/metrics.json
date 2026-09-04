@@ -1,0 +1,79 @@
+{
+  "algorithm": "road_particle_filter",
+  "has_reference_track": false,
+  "position_error": {
+    "available": false
+  },
+  "baselines": {},
+  "polygons": {
+    "mean_area_m2": 1315049.6055518219,
+    "coverage_95": null,
+    "note": "coverage requires a reference track"
+  },
+  "branches": {
+    "mean_branch_count": 1.0412284392090871,
+    "top1_accuracy": null,
+    "top3_recall": null
+  },
+  "gps_gates": {
+    "fixes_tested": 2196,
+    "fixes_accepted": 2110,
+    "fixes_rejected": 86,
+    "rejected_good_fraction": null,
+    "accepted_false_fraction": null,
+    "note": "No fault manifest available, so 'good' and 'false' fixes cannot be distinguished. Both rates require a synthetically corrupted trip."
+  },
+  "trust_recovery": {
+    "recovery_events": 14,
+    "mean_recovery_s": 3.297691890171596,
+    "max_recovery_s": 5.168443918228149,
+    "recoveries_s": [
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      5.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      5.17
+    ]
+  },
+  "parking": {
+    "status": "UNCERTAIN",
+    "position": {
+      "latitude": 59.964178110161775,
+      "longitude": 30.26944064186175
+    },
+    "covariance_m2": [
+      [
+        3025.0,
+        0.0
+      ],
+      [
+        0.0,
+        3025.0
+      ]
+    ],
+    "confidence": 0.208,
+    "polygon_radius_m": 55.0,
+    "terminal_cluster_fixes": 0,
+    "rejected_fixes": 18,
+    "has_reverse_motion": true,
+    "reason": "no mutually consistent terminal GPS cluster; mount calibration unavailable",
+    "max_distance_from_road_m": 659.2513464398806
+  },
+  "runtime": {
+    "seconds": 124.632,
+    "particles": 5000,
+    "seed": 42
+  },
+  "notes": [
+    "No reference track: this trip was not synthetically corrupted, so there is no ground truth and position error is undefined. The reconstruction is a probabilistic estimate, not a measurement."
+  ]
+}

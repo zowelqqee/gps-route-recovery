@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "tracking_architecture": "dual-tracker-v1",
+  "algorithm": "road_particle_filter",
+  "config": {
+    "motion": {
+      "max_gap_s": 1.0,
+      "max_accel_ms2": 6.0,
+      "max_speed_ms": 45.0,
+      "zupt_accel_ms2": 0.25,
+      "zupt_max_speed_ms": 1.5,
+      "zupt_gyro_rads": 0.03,
+      "zupt_window_s": 1.0,
+      "accel_bias_rw": 0.008,
+      "gyro_bias_rw": 0.002,
+      "accel_noise": 0.35,
+      "gyro_noise": 0.02,
+      "filter_dt_s": 0.1
+    },
+    "gps": {
+      "max_horizontal_accuracy_m": 50.0,
+      "physical_margin_m": 25.0,
+      "mahalanobis_threshold": 9.21,
+      "min_speed_for_course_ms": 3.0,
+      "max_course_error_deg": 60.0,
+      "max_speed_mismatch_ms": 8.0,
+      "recovery_course_error_deg": 55.0,
+      "recovery_speed_mismatch_ms": 7.0,
+      "recovery_min_step_m": 8.0,
+      "max_distance_to_road_m": 60.0,
+      "max_median_track_to_road_m": 25.0,
+      "suspect_to_lost_count": 3,
+      "recover_count": 4,
+      "lost_gap_s": 5.0,
+      "min_accuracy_sigma_m": 5.0,
+      "allow_simulated_fixes": false,
+      "accuracy_sigma_scale": 1.0
+    },
+    "pf": {
+      "n_particles": 5000,
+      "resample_threshold": 0.5,
+      "init_radius_m": 40.0,
+      "init_candidate_edges": 6,
+      "sigma_s": 0.15,
+      "sigma_v": 0.05,
+      "sigma_psi_rad": 0.008,
+      "sigma_gps_m": 12.0,
+      "sigma_heading_rad": 0.6,
+      "sigma_turn_rad": 0.7,
+      "sigma_speed_ms": 4.0,
+      "sigma_gps_speed_ms": 1.5,
+      "zupt_speed_sigma_ms": 0.3,
+      "allow_uturn": false,
+      "uturn_max_speed_ms": 1.5,
+      "dead_end_weight": 1e-09,
+      "inject_fraction": 0.02,
+      "divergence_likelihood": 1e-06,
+      "heading_snap_gain": 0.35
+    },
+    "polygon": {
+      "confidence": 0.95,
+      "r_min_m": 8.0,
+      "k_sigma": 2.0,
+      "cross_track_sigma_base_m": 4.0,
+      "cross_track_sigma_per_s": 0.15,
+      "max_radius_m": 60.0,
+      "simplify_tolerance_m": 1.0,
+      "min_component_probability": 0.01
+    },
+    "parking": {
+      "selected_probability": 0.98,
+      "margin_to_second": 0.2
+    },
+    "parking_tracker": {
+      "window_s": 60.0,
+      "terminal_cluster_window_s": 30.0,
+      "low_speed_ms": 3.0,
+      "min_cluster_fixes": 3,
+      "max_accuracy_m": 80.0,
+      "physical_margin_m": 25.0,
+      "process_position_sigma_m": 3.0,
+      "uncertain_radius_m": 55.0
+    },
+    "photo": {
+      "min_ocr_confidence": 0.3,
+      "address_boost_radius_m": 80.0,
+      "address_boost_alpha": 2.0,
+      "ocr_boost_beta": 1.0,
+      "vpr_temperature": 0.07
+    },
+    "seed": 42,
+    "rng_mode": "numpy"
+  },
+  "graph_path": "cache/spb.graphml",
+  "output_dt": 1.0,
+  "radius": 4000.0
+}

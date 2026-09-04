@@ -1,0 +1,31 @@
+{
+  "image_path": "photo-001.jpg",
+  "captured_at": "2026-09-04T05:27:13.520705Z",
+  "monotonic_time": 14111.0,
+  "camera_orientation": "portrait",
+  "device_heading_deg": 118.0,
+  "ocr": [
+    {
+      "text": "Воскресенская набережная",
+      "confidence": 0.94
+    },
+    {
+      "text": "д. 12",
+      "confidence": 0.86
+    },
+    {
+      "text": "Парковочная зона 7812",
+      "confidence": 0.81
+    },
+    {
+      "text": "Платная парковка 08:00-21:00",
+      "confidence": 0.64
+    }
+  ],
+  "assumed_latitude": 59.94988347891959,
+  "assumed_longitude": 30.353027988588174,
+  "assumed_accuracy": 9.208556890032108,
+  "exif_latitude": null,
+  "exif_longitude": null,
+  "note": "Synthetic placeholder image. The OCR lines are what Vision would return for a street-name plate; they are not a verified address."
+}

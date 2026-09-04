@@ -1,0 +1,31 @@
+{
+  "": {
+    "dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/LiveTrackingTests.d",
+    "object": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/LiveTrackingTests.o",
+    "swift-dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/master.swiftdeps"
+  },
+  "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/Tests/LiveTrackingTests/GraphFixtures.swift": {
+    "object": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/GraphFixtures.swift.o",
+    "swiftmodule": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/GraphFixtures~partial.swiftmodule",
+    "swift-dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/GraphFixtures.swiftdeps",
+    "diagnostics": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/GraphFixtures.dia"
+  },
+  "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/Tests/LiveTrackingTests/ProjectionFixtures.swift": {
+    "object": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionFixtures.swift.o",
+    "swiftmodule": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionFixtures~partial.swiftmodule",
+    "swift-dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionFixtures.swiftdeps",
+    "diagnostics": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionFixtures.dia"
+  },
+  "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/Tests/LiveTrackingTests/ProjectionTests.swift": {
+    "object": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionTests.swift.o",
+    "swiftmodule": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionTests.swiftdeps",
+    "diagnostics": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/ProjectionTests.dia"
+  },
+  "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/Tests/LiveTrackingTests/RoadGraphTests.swift": {
+    "object": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/RoadGraphTests.swift.o",
+    "swiftmodule": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/RoadGraphTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/RoadGraphTests.swiftdeps",
+    "diagnostics": "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTrackingTests.build/RoadGraphTests.dia"
+  }
+}

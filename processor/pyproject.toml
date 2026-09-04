@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geotrace"
+version = "0.1.0"
+description = "Probabilistic recovery of a car route from GPS outages using IMU dead reckoning and an OpenStreetMap road graph"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "pyproj>=3.6",
+    "shapely>=2.0",
+    "geopandas>=0.14",
+    "networkx>=3.2",
+    "osmnx>=1.9",
+    "folium>=0.15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+
+[project.scripts]
+geotrace = "geotrace.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

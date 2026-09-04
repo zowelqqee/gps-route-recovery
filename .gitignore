@@ -1,0 +1,25 @@
+# Python
+processor/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Cached OpenStreetMap data.
+# spb-center.graphml is committed on purpose (1 MB) so the pipeline runs with
+# no network. OSMnx's raw response cache is not.
+cache/*.json
+cache/osmnx/
+
+# Run outputs
+runs/
+
+# Xcode
+ios/GeoTraceLab/GeoTraceLab.xcodeproj/xcuserdata/
+ios/GeoTraceLab/GeoTraceLab.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# macOS
+.DS_Store

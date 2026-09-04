@@ -1,0 +1,634 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		03589AF0D1CB655D784E5318 /* PhotoReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E71C732BAD6550C28F92320 /* PhotoReviewView.swift */; };
+		05597264EB7B777B3E4875B8 /* TripExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F41EE7289DBC08637BD2482 /* TripExporter.swift */; };
+		0D27FAAFEB8A3395C2C6DC5C /* TripStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6284A954B4C0584FF12EFB31 /* TripStorageTests.swift */; };
+		0F3569DC9E054AE1F1A817B0 /* TripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F83E1F5C8D3D39941E22AC61 /* TripStore.swift */; };
+		26C038206F4A46FB5B5CA6A9 /* TripRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6D3ABBF7D2C14DE59417030 /* TripRecorder.swift */; };
+		2BC805A90A77AAF1AC7AA7A4 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 901EADF80415D82776D93627 /* LocationRecorder.swift */; };
+		45C070A134FAEAFA0435D433 /* CalibrationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685C369069FA50428B427AC3 /* CalibrationManager.swift */; };
+		4BEF50D10BC24ECCC135D15D /* SampleWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B6D7AB9078D7CC8EA1E9127 /* SampleWriter.swift */; };
+		5C10CE922C648B14F97090BF /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05D5F4034EA5A0EB80C3EF5A /* ContentView.swift */; };
+		61BBC9FDCC1CED979E4B2CC6 /* LiveTracking in Frameworks */ = {isa = PBXBuildFile; productRef = E1EA3E1DB0606CF89D51374B /* LiveTracking */; };
+		62887AED173FFEDBDBCA7E5D /* spb-graph-metadata.json in Resources */ = {isa = PBXBuildFile; fileRef = 78AA6E349E7EC6EDD7EEF32F /* spb-graph-metadata.json */; };
+		63253F0620D38DB725E979F2 /* TripModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61ADBA3110C6779B5A1AC625 /* TripModels.swift */; };
+		649A43161944F3DE5DDF327C /* TextRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1543B1FD4E57D4758B281E32 /* TextRecognizer.swift */; };
+		689B49893E17DFF6E1AD2DAF /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80176C5AEE5BDE69DE4856F2 /* CameraPicker.swift */; };
+		6FF0AD834AFF74F38F1E8CE4 /* RouteLayers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A556D38C466817D3E5A7FB /* RouteLayers.swift */; };
+		6FF48BBAF0396869FDF031E1 /* CalibrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F03EF60C7CD74C98F5260A0D /* CalibrationTests.swift */; };
+		71E49D728A0A198D44DA0D14 /* LiveResultWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8E551043DED6F05049AABF9 /* LiveResultWriter.swift */; };
+		758737A4EE26EBE64AEA9E7A /* LiveTrackingRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5916987FD53963343E741CFD /* LiveTrackingRecorder.swift */; };
+		776B1E9B6CA3DA40BCB37499 /* GeoJSONImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C904A6B5FCF9702CB8E4CFF4 /* GeoJSONImporterTests.swift */; };
+		8DDB0D5BB60B3E92AE85B04C /* MotionRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB726363E497A13C680590A4 /* MotionRecorder.swift */; };
+		90E341B2137CA2BB5835F499 /* LiveTracking in Frameworks */ = {isa = PBXBuildFile; productRef = 6EA368C65AA282DF1E007763 /* LiveTracking */; };
+		9A2B29075532A02446BD5AEA /* TripModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DEE82D4BBD42174DA152C2 /* TripModelsTests.swift */; };
+		9C5A032945AF86604AE22E44 /* GeoTraceLabApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13A7B09942C81F630ADF1467 /* GeoTraceLabApp.swift */; };
+		A11B411EC6D632FB0D3AF3C7 /* spb.geograph in Resources */ = {isa = PBXBuildFile; fileRef = D9729CBB6273D4DFE70915AD /* spb.geograph */; };
+		A6D12680F24D5D6468660609 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62E05A7CA57C38FD20AC1AB4 /* ShareSheet.swift */; };
+		B6E9B86A6B2AF45DAD8F2C70 /* TripMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B106C01708D8C7FED048E91D /* TripMapView.swift */; };
+		CB180E22AAA760919D365180 /* CalibrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4A3382A454C1FC1FEED0C8C /* CalibrationView.swift */; };
+		E0F54158B33C702AD4922454 /* PhotoSaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF61F659111CA886924FF0EF /* PhotoSaver.swift */; };
+		EA5D6FC2E2B8F88638E80522 /* TripListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58C0380F5E8FF88AA53BC000 /* TripListView.swift */; };
+		EECD32C7E45ACF9C959DA7EB /* GeoJSONImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1A6C6ECABBBD2AACE2323A1 /* GeoJSONImporter.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8028D469F6496AB0F358128A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4E38454C37BB882AE35C8041 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8013264C1A09653BEC9630CF;
+			remoteInfo = GeoTraceLab;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		05D5F4034EA5A0EB80C3EF5A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		13A7B09942C81F630ADF1467 /* GeoTraceLabApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoTraceLabApp.swift; sourceTree = "<group>"; };
+		1543B1FD4E57D4758B281E32 /* TextRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextRecognizer.swift; sourceTree = "<group>"; };
+		23F509D27F4E3BEDDC24E4FB /* LiveTracking */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LiveTracking; path = ../LiveTracking; sourceTree = SOURCE_ROOT; };
+		3E71C732BAD6550C28F92320 /* PhotoReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoReviewView.swift; sourceTree = "<group>"; };
+		51DEE82D4BBD42174DA152C2 /* TripModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripModelsTests.swift; sourceTree = "<group>"; };
+		58C0380F5E8FF88AA53BC000 /* TripListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripListView.swift; sourceTree = "<group>"; };
+		5916987FD53963343E741CFD /* LiveTrackingRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTrackingRecorder.swift; sourceTree = "<group>"; };
+		61ADBA3110C6779B5A1AC625 /* TripModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripModels.swift; sourceTree = "<group>"; };
+		6284A954B4C0584FF12EFB31 /* TripStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStorageTests.swift; sourceTree = "<group>"; };
+		62E05A7CA57C38FD20AC1AB4 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		685C369069FA50428B427AC3 /* CalibrationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationManager.swift; sourceTree = "<group>"; };
+		6E3610F1C8379FACDA75A59B /* GeoTraceLab.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GeoTraceLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		78AA6E349E7EC6EDD7EEF32F /* spb-graph-metadata.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "spb-graph-metadata.json"; sourceTree = "<group>"; };
+		80176C5AEE5BDE69DE4856F2 /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
+		8F41EE7289DBC08637BD2482 /* TripExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripExporter.swift; sourceTree = "<group>"; };
+		901EADF80415D82776D93627 /* LocationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationRecorder.swift; sourceTree = "<group>"; };
+		93A556D38C466817D3E5A7FB /* RouteLayers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteLayers.swift; sourceTree = "<group>"; };
+		9B6D7AB9078D7CC8EA1E9127 /* SampleWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleWriter.swift; sourceTree = "<group>"; };
+		A1A6C6ECABBBD2AACE2323A1 /* GeoJSONImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoJSONImporter.swift; sourceTree = "<group>"; };
+		A8E551043DED6F05049AABF9 /* LiveResultWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveResultWriter.swift; sourceTree = "<group>"; };
+		B106C01708D8C7FED048E91D /* TripMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripMapView.swift; sourceTree = "<group>"; };
+		B57CFEADAAC54009DD853A76 /* GeoTraceLabTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = GeoTraceLabTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C904A6B5FCF9702CB8E4CFF4 /* GeoJSONImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoJSONImporterTests.swift; sourceTree = "<group>"; };
+		D9729CBB6273D4DFE70915AD /* spb.geograph */ = {isa = PBXFileReference; path = spb.geograph; sourceTree = "<group>"; };
+		DB726363E497A13C680590A4 /* MotionRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionRecorder.swift; sourceTree = "<group>"; };
+		E6D3ABBF7D2C14DE59417030 /* TripRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripRecorder.swift; sourceTree = "<group>"; };
+		EF61F659111CA886924FF0EF /* PhotoSaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSaver.swift; sourceTree = "<group>"; };
+		F03EF60C7CD74C98F5260A0D /* CalibrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationTests.swift; sourceTree = "<group>"; };
+		F4A3382A454C1FC1FEED0C8C /* CalibrationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationView.swift; sourceTree = "<group>"; };
+		F83E1F5C8D3D39941E22AC61 /* TripStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStore.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		27C7C361DA47DA539498C6AF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				90E341B2137CA2BB5835F499 /* LiveTracking in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		416EBBE1EC4B2F9669BA1E85 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				61BBC9FDCC1CED979E4B2CC6 /* LiveTracking in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0ADCA70DDE9A3FDD577781D2 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				23F509D27F4E3BEDDC24E4FB /* LiveTracking */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		1F48A09919F8FBF300FAA329 /* Vision */ = {
+			isa = PBXGroup;
+			children = (
+				1543B1FD4E57D4758B281E32 /* TextRecognizer.swift */,
+			);
+			path = Vision;
+			sourceTree = "<group>";
+		};
+		4D74C33C41FA9A393A4E1566 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				78AA6E349E7EC6EDD7EEF32F /* spb-graph-metadata.json */,
+				D9729CBB6273D4DFE70915AD /* spb.geograph */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		4DFC6BFBA82D18F8F18F9EBC /* Import */ = {
+			isa = PBXGroup;
+			children = (
+				A1A6C6ECABBBD2AACE2323A1 /* GeoJSONImporter.swift */,
+			);
+			path = Import;
+			sourceTree = "<group>";
+		};
+		5A3EC3FE046998D467B5365D /* Export */ = {
+			isa = PBXGroup;
+			children = (
+				EF61F659111CA886924FF0EF /* PhotoSaver.swift */,
+				62E05A7CA57C38FD20AC1AB4 /* ShareSheet.swift */,
+				8F41EE7289DBC08637BD2482 /* TripExporter.swift */,
+			);
+			path = Export;
+			sourceTree = "<group>";
+		};
+		5A85693988AE2AD08F34C8DD /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6E3610F1C8379FACDA75A59B /* GeoTraceLab.app */,
+				B57CFEADAAC54009DD853A76 /* GeoTraceLabTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		648138AD5809858E0588AA8A = {
+			isa = PBXGroup;
+			children = (
+				0ADCA70DDE9A3FDD577781D2 /* Packages */,
+				4D74C33C41FA9A393A4E1566 /* Resources */,
+				98B44E3C26358EA381DDFA94 /* Sources */,
+				DD24BB4BC2E4553DE56D3F37 /* Tests */,
+				5A85693988AE2AD08F34C8DD /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		66FACA6B4892B08585ACFC2C /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				9B6D7AB9078D7CC8EA1E9127 /* SampleWriter.swift */,
+				61ADBA3110C6779B5A1AC625 /* TripModels.swift */,
+				F83E1F5C8D3D39941E22AC61 /* TripStore.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		8D8A3D15E6B2BE5516AEE639 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				F4A3382A454C1FC1FEED0C8C /* CalibrationView.swift */,
+				80176C5AEE5BDE69DE4856F2 /* CameraPicker.swift */,
+				05D5F4034EA5A0EB80C3EF5A /* ContentView.swift */,
+				3E71C732BAD6550C28F92320 /* PhotoReviewView.swift */,
+				93A556D38C466817D3E5A7FB /* RouteLayers.swift */,
+				58C0380F5E8FF88AA53BC000 /* TripListView.swift */,
+				B106C01708D8C7FED048E91D /* TripMapView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		98B44E3C26358EA381DDFA94 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				5A3EC3FE046998D467B5365D /* Export */,
+				4DFC6BFBA82D18F8F18F9EBC /* Import */,
+				EE14F8F96A9E484BEE720684 /* Live */,
+				66FACA6B4892B08585ACFC2C /* Models */,
+				FBD8158194452F0090A2E0DE /* Recording */,
+				8D8A3D15E6B2BE5516AEE639 /* Views */,
+				1F48A09919F8FBF300FAA329 /* Vision */,
+				13A7B09942C81F630ADF1467 /* GeoTraceLabApp.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		DD24BB4BC2E4553DE56D3F37 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				E1EF40B5EC3B2E73B2F89B01 /* GeoTraceLabTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		E1EF40B5EC3B2E73B2F89B01 /* GeoTraceLabTests */ = {
+			isa = PBXGroup;
+			children = (
+				F03EF60C7CD74C98F5260A0D /* CalibrationTests.swift */,
+				C904A6B5FCF9702CB8E4CFF4 /* GeoJSONImporterTests.swift */,
+				51DEE82D4BBD42174DA152C2 /* TripModelsTests.swift */,
+				6284A954B4C0584FF12EFB31 /* TripStorageTests.swift */,
+			);
+			path = GeoTraceLabTests;
+			sourceTree = "<group>";
+		};
+		EE14F8F96A9E484BEE720684 /* Live */ = {
+			isa = PBXGroup;
+			children = (
+				A8E551043DED6F05049AABF9 /* LiveResultWriter.swift */,
+				5916987FD53963343E741CFD /* LiveTrackingRecorder.swift */,
+			);
+			path = Live;
+			sourceTree = "<group>";
+		};
+		FBD8158194452F0090A2E0DE /* Recording */ = {
+			isa = PBXGroup;
+			children = (
+				685C369069FA50428B427AC3 /* CalibrationManager.swift */,
+				901EADF80415D82776D93627 /* LocationRecorder.swift */,
+				DB726363E497A13C680590A4 /* MotionRecorder.swift */,
+				E6D3ABBF7D2C14DE59417030 /* TripRecorder.swift */,
+			);
+			path = Recording;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		52F92C0DD665A730B1EF3716 /* GeoTraceLabTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FDBDDD34342ABD7CD3860F40 /* Build configuration list for PBXNativeTarget "GeoTraceLabTests" */;
+			buildPhases = (
+				7A49BAFAECCC78EE3F7EF988 /* Sources */,
+				416EBBE1EC4B2F9669BA1E85 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				410181CE5440D72C94E29E07 /* PBXTargetDependency */,
+			);
+			name = GeoTraceLabTests;
+			packageProductDependencies = (
+				E1EA3E1DB0606CF89D51374B /* LiveTracking */,
+			);
+			productName = GeoTraceLabTests;
+			productReference = B57CFEADAAC54009DD853A76 /* GeoTraceLabTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		8013264C1A09653BEC9630CF /* GeoTraceLab */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5EAAE4BFE1E543BA120CA21C /* Build configuration list for PBXNativeTarget "GeoTraceLab" */;
+			buildPhases = (
+				A9FD7984E6873C796FCA4181 /* Sources */,
+				FC2FA46A0367B6ECAADF6905 /* Resources */,
+				27C7C361DA47DA539498C6AF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = GeoTraceLab;
+			packageProductDependencies = (
+				6EA368C65AA282DF1E007763 /* LiveTracking */,
+			);
+			productName = GeoTraceLab;
+			productReference = 6E3610F1C8379FACDA75A59B /* GeoTraceLab.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4E38454C37BB882AE35C8041 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = A011C16F25D88DCAB092851F /* Build configuration list for PBXProject "GeoTraceLab" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 648138AD5809858E0588AA8A;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8EE359A0F661AD27CF33CFCA /* XCLocalSwiftPackageReference "../LiveTracking" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5A85693988AE2AD08F34C8DD /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8013264C1A09653BEC9630CF /* GeoTraceLab */,
+				52F92C0DD665A730B1EF3716 /* GeoTraceLabTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FC2FA46A0367B6ECAADF6905 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				62887AED173FFEDBDBCA7E5D /* spb-graph-metadata.json in Resources */,
+				A11B411EC6D632FB0D3AF3C7 /* spb.geograph in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7A49BAFAECCC78EE3F7EF988 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6FF48BBAF0396869FDF031E1 /* CalibrationTests.swift in Sources */,
+				776B1E9B6CA3DA40BCB37499 /* GeoJSONImporterTests.swift in Sources */,
+				9A2B29075532A02446BD5AEA /* TripModelsTests.swift in Sources */,
+				0D27FAAFEB8A3395C2C6DC5C /* TripStorageTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A9FD7984E6873C796FCA4181 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45C070A134FAEAFA0435D433 /* CalibrationManager.swift in Sources */,
+				CB180E22AAA760919D365180 /* CalibrationView.swift in Sources */,
+				689B49893E17DFF6E1AD2DAF /* CameraPicker.swift in Sources */,
+				5C10CE922C648B14F97090BF /* ContentView.swift in Sources */,
+				EECD32C7E45ACF9C959DA7EB /* GeoJSONImporter.swift in Sources */,
+				9C5A032945AF86604AE22E44 /* GeoTraceLabApp.swift in Sources */,
+				71E49D728A0A198D44DA0D14 /* LiveResultWriter.swift in Sources */,
+				758737A4EE26EBE64AEA9E7A /* LiveTrackingRecorder.swift in Sources */,
+				2BC805A90A77AAF1AC7AA7A4 /* LocationRecorder.swift in Sources */,
+				8DDB0D5BB60B3E92AE85B04C /* MotionRecorder.swift in Sources */,
+				03589AF0D1CB655D784E5318 /* PhotoReviewView.swift in Sources */,
+				E0F54158B33C702AD4922454 /* PhotoSaver.swift in Sources */,
+				6FF0AD834AFF74F38F1E8CE4 /* RouteLayers.swift in Sources */,
+				4BEF50D10BC24ECCC135D15D /* SampleWriter.swift in Sources */,
+				A6D12680F24D5D6468660609 /* ShareSheet.swift in Sources */,
+				649A43161944F3DE5DDF327C /* TextRecognizer.swift in Sources */,
+				05597264EB7B777B3E4875B8 /* TripExporter.swift in Sources */,
+				EA5D6FC2E2B8F88638E80522 /* TripListView.swift in Sources */,
+				B6E9B86A6B2AF45DAD8F2C70 /* TripMapView.swift in Sources */,
+				63253F0620D38DB725E979F2 /* TripModels.swift in Sources */,
+				26C038206F4A46FB5B5CA6A9 /* TripRecorder.swift in Sources */,
+				0F3569DC9E054AE1F1A817B0 /* TripStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		410181CE5440D72C94E29E07 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8013264C1A09653BEC9630CF /* GeoTraceLab */;
+			targetProxy = 8028D469F6496AB0F358128A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		34C618AE6EE4B6AA1BB89218 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.geotrace.GeoTraceLab;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3647AC36F5B0616D3E254D2F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.geotrace.GeoTraceLab;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6089549677E1F4528D797B1A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		698528CBA640CD907EB60927 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		70C89C9552329566D1F31C06 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.geotrace.GeoTraceLabTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GeoTraceLab.app/GeoTraceLab";
+			};
+			name = Release;
+		};
+		C2FA544E758FBF3D06DD8DAE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.geotrace.GeoTraceLabTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GeoTraceLab.app/GeoTraceLab";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5EAAE4BFE1E543BA120CA21C /* Build configuration list for PBXNativeTarget "GeoTraceLab" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				34C618AE6EE4B6AA1BB89218 /* Debug */,
+				3647AC36F5B0616D3E254D2F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A011C16F25D88DCAB092851F /* Build configuration list for PBXProject "GeoTraceLab" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6089549677E1F4528D797B1A /* Debug */,
+				698528CBA640CD907EB60927 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FDBDDD34342ABD7CD3860F40 /* Build configuration list for PBXNativeTarget "GeoTraceLabTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C2FA544E758FBF3D06DD8DAE /* Debug */,
+				70C89C9552329566D1F31C06 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		8EE359A0F661AD27CF33CFCA /* XCLocalSwiftPackageReference "../LiveTracking" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../LiveTracking;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6EA368C65AA282DF1E007763 /* LiveTracking */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiveTracking;
+		};
+		E1EA3E1DB0606CF89D51374B /* LiveTracking */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiveTracking;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4E38454C37BB882AE35C8041 /* Project object */;
+}

@@ -1,0 +1,10 @@
+{
+  "app_version" : "0.1.0",
+  "device_model" : "iPhone",
+  "ended_at" : "2026-09-04T13:52:20.099Z",
+  "location_sample_count" : 2196,
+  "motion_sample_count" : 118409,
+  "os_version" : "26.4.2",
+  "started_at" : "2026-09-04T13:12:39.484Z",
+  "trip_id" : "trip-32c24d86-06af-45fd-a3a0-79354f2cbb70"
+}

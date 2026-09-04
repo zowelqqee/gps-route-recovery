@@ -1,0 +1,3 @@
+module LiveTracking {
+    header "/Users/arseniyabramidze/delimobil/gps-route-recovery/ios/LiveTracking/.build/arm64-apple-macosx/release/LiveTracking.build/include/LiveTracking-Swift.h"
+}
