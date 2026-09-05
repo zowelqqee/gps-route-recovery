@@ -56,7 +56,7 @@ public final class TripRecorder: ObservableObject {
         motion: MotionRecorder = MotionRecorder(),
         calibration: CalibrationManager = CalibrationManager(),
         store: TripStore = .shared,
-        live: LiveTrackingRecorder = LiveTrackingRecorder(),
+        live: LiveTrackingRecorder? = nil,
         timebase: Timebase = Timebase()
     ) {
         self.timebase = timebase
@@ -64,8 +64,8 @@ public final class TripRecorder: ObservableObject {
         self.motion = motion
         self.calibration = calibration
         self.store = store
-        self.live = live
-        liveChanges = live.objectWillChange.sink { [weak self] _ in
+        self.live = live ?? LiveTrackingRecorder()
+        liveChanges = self.live.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         refreshSavedTrips()

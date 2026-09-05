@@ -349,6 +349,7 @@ public struct LiveDiagnostics: Sendable, Codable, Equatable {
     public var initialHeadingDegrees: Double?
     public var initialAccelBias: Double = 0
     public var initialGyroBias: Double = 0
+    public var mountDisturbances: Int = 0
 
     public init() {}
 
@@ -404,6 +405,7 @@ public struct LiveSnapshot: Sendable, Equatable {
     public var calibrationWarning: String?
     public var hasReverseMotion: Bool = false
     public var faultMode: String = "None"
+    public var mountDisturbanceActive: Bool = false
 
     public init() {}
 }

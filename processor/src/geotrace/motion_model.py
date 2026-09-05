@@ -99,6 +99,13 @@ class ImuControl:
     """True when the source samples were further apart than max_gap_s. The
     filters must not integrate across such a step."""
 
+    is_shock: bool = False
+    """A likely holder disturbance. The filters must not interpret its raw
+    acceleration or rotation as a manoeuvre of the car."""
+
+    peak_accel_ms2: float = 0.0
+    peak_gyro_rads: float = 0.0
+
 
 @dataclass
 class ImuStream:
@@ -163,6 +170,8 @@ def build_imu_stream(
         yaw[i] = float((rot @ np.asarray(sample.rotation_rate, dtype=float))[2])
         gyro_norm[i] = float(np.linalg.norm(sample.rotation_rate))
 
+    accel_norm = np.linalg.norm(a_world, axis=1)
+
     # Align the arbitrary CMDeviceMotion yaw reference with the true heading.
     offset = 0.0
     if reference_heading_rad is not None:
@@ -182,8 +191,10 @@ def build_imu_stream(
     bins = np.clip(np.digitize(times, edges) - 1, 0, n_steps - 1)
 
     quiet_flags = _quiet_imu(times, a_world, gyro_norm, cfg)
+    shock_flags = (accel_norm >= cfg.shock_accel_ms2) | (gyro_norm >= cfg.shock_gyro_rads)
 
     prev_time = t0
+    shock_until = float("-inf")
     for step in range(n_steps):
         mask = bins == step
         t_end_step = float(edges[step + 1])
@@ -196,6 +207,7 @@ def build_imu_stream(
                     yaw_rate=0.0,
                     is_quiet=False,
                     gap_exceeded=(t_end_step - prev_time) > cfg.max_gap_s,
+                    is_shock=t_end_step <= shock_until,
                 )
             )
             continue
@@ -203,6 +215,10 @@ def build_imu_stream(
         gap = float(np.max(np.diff(chunk_times))) if chunk_times.size > 1 else 0.0
         gap = max(gap, float(chunk_times[0] - prev_time))
         mean_a = a_world[mask].mean(axis=0)
+        peak_accel = float(np.max(accel_norm[mask]))
+        peak_gyro = float(np.max(gyro_norm[mask]))
+        if np.any(shock_flags[mask]):
+            shock_until = max(shock_until, t_end_step + cfg.shock_hold_s)
         stream.controls.append(
             ImuControl(
                 t=t_end_step,
@@ -212,6 +228,9 @@ def build_imu_stream(
                 a_world=(float(mean_a[0]), float(mean_a[1]), float(mean_a[2])),
                 is_quiet=bool(np.all(quiet_flags[mask])),
                 gap_exceeded=gap > cfg.max_gap_s,
+                is_shock=t_end_step <= shock_until,
+                peak_accel_ms2=peak_accel,
+                peak_gyro_rads=peak_gyro,
             )
         )
         prev_time = float(chunk_times[-1])

@@ -182,6 +182,20 @@ def build_map(inputs: ReportInputs) -> folium.Map:
                 ),
             ).add_to(group)
 
+    shocks = result.diagnostics.get("imu_shocks", [])
+    if shocks:
+        group = folium.FeatureGroup(name=f"IMU mount disturbances ({len(shocks)})", show=True).add_to(fmap)
+        for item in shocks:
+            folium.Marker(
+                [item["latitude"], item["longitude"]],
+                tooltip=(
+                    f"IMU disturbance: t = {item['start_s']:.1f}–{item['end_s']:.1f}s"
+                    f" &middot; peak acceleration {item['peak_accel_ms2']:.1f} m/s²"
+                    f" &middot; peak rotation {item['peak_gyro_rads']:.2f} rad/s"
+                ),
+                icon=folium.Icon(color="purple", icon="warning-sign"),
+            ).add_to(group)
+
     if result.outage_windows:
         group = folium.FeatureGroup(name="Outage start / end", show=True).add_to(fmap)
         estimate_times = np.array(track.times) if track.times else np.zeros(0)

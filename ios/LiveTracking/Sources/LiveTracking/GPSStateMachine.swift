@@ -8,10 +8,9 @@ import Foundation
 /// * returning to TRUSTED needs several *consecutive consistent* fixes, which is
 ///   what rejects the scatter a receiver emits in the first seconds after it
 ///   re-acquires;
-/// * in LOST and RECOVERING the filter-prediction gates are not applied at all.
-///   Dead reckoning that has run free for a minute is not a valid reference;
-///   gating returning fixes against it makes the filter defend its own drift and
-///   never recover. Fixes are checked against each other instead.
+/// * the Mahalanobis gate remains active in LOST and RECOVERING, but its
+///   innovation covariance grows with dead-reckoning age. This rejects a true
+///   teleport without making the filter defend a stale inertial prediction.
 public final class GPSStateMachine {
     public private(set) var state: GPSState = .lost
     public private(set) var history: [GateDecision] = []
@@ -26,6 +25,7 @@ public final class GPSStateMachine {
     private var bootstrapDone = false
     private var everTrusted = false
     private var lostAfterTrusted = false
+    private var untrustedSince: Double?
     /// Bounded so a long trip cannot grow the history without limit; the full
     /// stream is persisted to disk instead.
     private let historyLimit: Int
@@ -54,6 +54,7 @@ public final class GPSStateMachine {
         state = .lost
         if everTrusted { lostAfterTrusted = true }
         consecutiveGood = 0
+        untrustedSince = now
         return true
     }
 
@@ -77,10 +78,6 @@ public final class GPSStateMachine {
         // reason list is what makes a rejection diagnosable afterwards.
         if !sample.isUsable { reasons.append("invalid_fix") }
 
-        if let accuracy = sample.horizontalAccuracy, accuracy > config.maxHorizontalAccuracyM {
-            reasons.append("accuracy_too_poor")
-        }
-
         if !config.allowSimulatedFixes && sample.isSimulatedBySoftware {
             reasons.append("simulated_by_software")
         }
@@ -101,17 +98,24 @@ public final class GPSStateMachine {
         }
 
         let tracking = state == .trusted || state == .suspect
-        if tracking {
-            if let predicted, let covariance {
-                let residual = measured - predicted
-                let S = covariance + Matrix2.diagonal(sigma * sigma)
-                let gate = GPSGate.mahalanobis(
-                    residual: residual, covariance: S, threshold: config.mahalanobisThreshold
-                )
-                mahalanobis = gate.distanceSquared
-                if !gate.passed { reasons.append("mahalanobis_gate") }
+        if let predicted, let covariance {
+            let residual = measured - predicted
+            var innovationCovariance = covariance
+            if !tracking {
+                let since = Swift.max(0, sample.monotonicTime - (untrustedSince ?? sample.monotonicTime))
+                let driftSigma = config.recoveryPositionSigmaM
+                    + config.recoveryPositionSigmaGrowthMPS * since
+                innovationCovariance = innovationCovariance + Matrix2.diagonal(driftSigma * driftSigma)
             }
+            let S = innovationCovariance + Matrix2.diagonal(sigma * sigma)
+            let gate = GPSGate.mahalanobis(
+                residual: residual, covariance: S, threshold: config.mahalanobisThreshold
+            )
+            mahalanobis = gate.distanceSquared
+            if !gate.passed { reasons.append("mahalanobis_gate") }
+        }
 
+        if tracking {
             if sample.hasValidSpeed, bootstrapDone {
                 if abs((sample.speed ?? 0) - predictedSpeed) > config.maxSpeedMismatchMS {
                     reasons.append("speed_mismatch")
@@ -178,6 +182,7 @@ public final class GPSStateMachine {
             if consecutiveGood >= config.recoverCount {
                 state = .trusted
                 bootstrapDone = true
+                untrustedSince = nil
             }
             if state == .trusted { everTrusted = true }
         } else {
@@ -186,6 +191,7 @@ public final class GPSStateMachine {
             switch state {
             case .trusted:
                 state = .suspect
+                untrustedSince = sample.monotonicTime
             case .suspect where consecutiveBad >= config.suspectToLostCount:
                 state = .lost
                 if everTrusted { lostAfterTrusted = true }

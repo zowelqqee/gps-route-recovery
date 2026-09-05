@@ -89,13 +89,18 @@ def test_gps_outage_keeps_a_causal_road_hypothesis(
     assert any(u.n_particles > 0 for u in inertial)
 
 
-def test_imu_uncertainty_keeps_road_branches_during_an_outage(fork_network: RoadNetwork) -> None:
+def test_noncompact_road_hypotheses_fall_back_to_an_imu_disc(fork_network: RoadNetwork) -> None:
     _broken, cfg, result = _run(fork_network)
     inertial = [
-        u for u in result.uncertainty if u.gps_state != "TRUSTED" and u.n_particles > 0
+        u for u in result.uncertainty if u.gps_state != "TRUSTED"
     ]
     assert inertial[-1].total_area_m2 > 0
-    assert all(u.n_particles == cfg.pf.n_particles for u in inertial)
+    # The PF still runs internally, but once its road corridors are too broad
+    # the report must not label their merged OSM geometry as a 95% branch.
+    assert any(u.n_particles == cfg.pf.n_particles for u in inertial)
+    assert any(u.n_particles == 0 for u in inertial)
+    graph_corridors = [u for u in inertial if u.n_particles > 0]
+    assert all(u.total_area_m2 <= cfg.pf.outage_map_assist_max_area_m2 for u in graph_corridors)
 
 
 def test_reanchor_starts_a_new_visible_route_segment(grid_network: RoadNetwork) -> None:

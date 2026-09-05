@@ -210,9 +210,9 @@ final class GPSGateTests: XCTestCase {
         XCTAssertNotEqual(machine.state, .trusted)
     }
 
-    /// A dead-reckoning solution that has run free for a minute is not a valid
-    /// reference; gating against it would make the filter defend its own drift.
-    func testTheMahalanobisGateIsDroppedOnceTrackingIsLost() {
+    /// Recovery keeps the statistical gate active, but expands its covariance
+    /// so a plausible return does not have to agree with stale inertial state.
+    func testRecoveryMahalanobisGateExpandsWithDeadReckoningAge() {
         let machine = GPSStateMachine(config: config, maxAccelMS2: maxAccel)
         promote(machine)
         _ = machine.noteGap(now: 200)
@@ -221,7 +221,7 @@ final class GPSGateTests: XCTestCase {
             predicted: Point(x: 0, y: 0), predictedSpeed: 10,
             covariance: .diagonal(100)
         )
-        XCTAssertNil(decision.mahalanobis)
+        XCTAssertNotNil(decision.mahalanobis)
         XCTAssertTrue(decision.accepted)
     }
 
@@ -276,7 +276,8 @@ final class GPSGateTests: XCTestCase {
             covariance: .diagonal(25), roadDistanceM: 500
         )
         XCTAssertFalse(decision.accepted)
-        XCTAssertTrue(decision.reasons.contains("accuracy_too_poor"))
+        XCTAssertEqual(decision.sigmaM, 90,
+                       "poor reported accuracy must widen R, not fabricate an outage")
         XCTAssertTrue(decision.reasons.contains("physical_gate"))
         XCTAssertFalse(decision.reasons.contains("far_from_road"))
         XCTAssertEqual(decision.roadDistanceM, 500)

@@ -184,6 +184,16 @@ class ExtendedKalmanFilter:
             self.P[IDX_PSI, IDX_PSI] = math.radians(20.0) ** 2
         self.P = 0.5 * (self.P + self.P.T)
 
+    def inflate_for_mount_disturbance(
+        self, position_noise_mpsqrt: float, heading_noise_radsqrt: float, dt: float
+    ) -> None:
+        """Represent a phone shock without integrating it as vehicle motion."""
+        scale = max(0.0, float(dt))
+        self.P[IDX_E, IDX_E] += (position_noise_mpsqrt**2) * scale
+        self.P[IDX_N, IDX_N] += (position_noise_mpsqrt**2) * scale
+        self.P[IDX_PSI, IDX_PSI] += (heading_noise_radsqrt**2) * scale
+        self.P = 0.5 * (self.P + self.P.T)
+
     # ----------------------------------------------------------- accessors
 
     @property

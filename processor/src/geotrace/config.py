@@ -50,6 +50,29 @@ class MotionConfig:
     zupt_window_s: float = 1.0
     """How long the stillness condition must hold before a ZUPT is applied."""
 
+    shock_accel_ms2: float = 9.0
+    """Horizontal-or-vertical user acceleration above this is not a plausible
+    passenger-car control input and may be a dropped or dislodged phone."""
+
+    shock_gyro_rads: float = 4.0
+    """Angular-rate magnitude that flags a likely mount disturbance rather
+    than a normal vehicle yaw manoeuvre. Normal hard vehicle turns are well
+    below this; the threshold is deliberately conservative."""
+
+    shock_hold_s: float = 1.0
+    """How long an impact disables direct IMU control integration."""
+
+    shock_min_vehicle_speed_ms: float = 2.0
+    """A shock is reported as a route-relevant mount disturbance only while
+    the estimated vehicle is moving. Handling the phone after parking must not
+    flood the route report with irrelevant markers."""
+
+    shock_position_noise_mpsqrt: float = 10.0
+    shock_heading_noise_radsqrt: float = 0.35
+    """Extra uncertainty injected while a mount-disturbance hold is active.
+    The state keeps constant velocity and heading, but is explicitly marked as
+    less reliable until GPS or a stable IMU sequence can constrain it again."""
+
     accel_bias_rw: float = 0.008
     """Random-walk sigma of the accelerometer bias, m/s^2 per sqrt(s).
 
@@ -237,6 +260,11 @@ class ParticleFilterConfig:
     """The dominant graph hypothesis must remain spatially compact.  A single
     connected OSM component can still contain several junction choices, so its
     probability alone is not sufficient evidence."""
+
+    outage_map_assist_max_area_m2: float = 35_000.0
+    """Largest 95% road-corridor footprint that may be presented as one map
+    hypothesis during an outage.  Above this, connected road buffers can join
+    several turns into one visually misleading component."""
 
     outage_map_assist_max_offset_m: float = 120.0
     """Never let a map hypothesis pull the EKF estimate across the city, even

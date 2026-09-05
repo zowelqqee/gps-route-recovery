@@ -116,6 +116,27 @@ final class MotionTests: XCTestCase {
         XCTAssertTrue(flagged, "a ten-second hole in the IMU stream must be marked")
     }
 
+    func testImpactIsHeldAsAMountDisturbance() {
+        var config = MotionConfig()
+        config.filterDT = 0.1
+        config.shockHoldSeconds = 1.0
+        let processor = MotionProcessor(config: config)
+        var controls: [IMUControl] = []
+        for step in 0..<90 {
+            let t = Double(step) / 50.0
+            let accel = step == 12 ? 11.0 : 0.0
+            if let control = processor.ingest(Fixtures.motion(t: t, accelMS2: accel)) {
+                controls.append(control)
+            }
+        }
+        if let final = processor.flush() { controls.append(final) }
+        let shocks = controls.filter(\.isShock)
+        XCTAssertFalse(shocks.isEmpty)
+        XCTAssertGreaterThanOrEqual(shocks.count, 8,
+                                    "the one-second hold must cover more than the impact bin")
+        XCTAssertGreaterThanOrEqual(shocks.map(\.peakAccelMS2).max() ?? 0, 11)
+    }
+
     // MARK: - Bias
 
     func testInitialBiasIsSignedNotAMagnitude() {

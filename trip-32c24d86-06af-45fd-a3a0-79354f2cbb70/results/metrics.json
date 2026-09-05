@@ -6,34 +6,35 @@
   },
   "baselines": {},
   "polygons": {
-    "mean_area_m2": 19908.934913253983,
+    "mean_area_m2": 5523.809036068686,
     "coverage_95": null,
     "note": "coverage requires a reference track"
   },
   "branches": {
-    "mean_branch_count": 1.0638387232255355,
+    "mean_branch_count": 1.0470390592188157,
     "top1_accuracy": null,
     "top3_recall": null
   },
   "gps_gates": {
     "fixes_tested": 2196,
-    "fixes_accepted": 2113,
-    "fixes_rejected": 83,
+    "fixes_accepted": 2124,
+    "fixes_rejected": 72,
     "rejected_good_fraction": null,
     "accepted_false_fraction": null,
     "note": "No fault manifest available, so 'good' and 'false' fixes cannot be distinguished. Both rates require a synthetically corrupted trip."
   },
   "trust_recovery": {
-    "recovery_events": 13,
-    "mean_recovery_s": 3.320624461540809,
+    "recovery_events": 14,
+    "mean_recovery_s": 3.2977133648736134,
     "max_recovery_s": 5.168443918228149,
     "recoveries_s": [
       3.0,
       3.0,
       3.0,
       3.0,
-      3.0,
       5.0,
+      3.0,
+      3.0,
       3.0,
       3.0,
       3.0,
@@ -46,8 +47,8 @@
   "parking": {
     "status": "UNCERTAIN",
     "position": {
-      "latitude": 59.963456295762235,
-      "longitude": 30.26744151693896
+      "latitude": 59.96362494344764,
+      "longitude": 30.26738738846197
     },
     "covariance_m2": [
       [
@@ -65,10 +66,10 @@
     "rejected_fixes": 0,
     "has_reverse_motion": true,
     "reason": "no mutually consistent terminal GPS cluster; mount calibration unavailable",
-    "max_distance_from_road_m": 873.5179341498267
+    "max_distance_from_road_m": 844.4638178963147
   },
   "runtime": {
-    "seconds": 124.794,
+    "seconds": 103.335,
     "particles": 5000,
     "seed": 42
   },

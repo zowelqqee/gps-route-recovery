@@ -38,6 +38,14 @@ public struct MotionConfig: Codable, Sendable, Equatable {
     public var zuptMaxSpeedMS: Double = 1.5
     public var zuptGyroRadS: Double = 0.03
     public var zuptWindowSeconds: Double = 1.0
+    /// An impact or a fast phone rotation is evidence that the handset moved
+    /// independently of the car.  It must not become vehicle acceleration.
+    public var shockAccelMS2: Double = 9.0
+    public var shockGyroRadS: Double = 4.0
+    public var shockHoldSeconds: Double = 1.0
+    public var shockMinVehicleSpeedMS: Double = 2.0
+    public var shockPositionNoiseMSqrt: Double = 10.0
+    public var shockHeadingNoiseRadSqrt: Double = 0.35
     /// Random-walk sigma of the accelerometer bias, m/s^2 per sqrt(s). Small on
     /// purpose: the bias is only observable while GPS speed is available, and if
     /// it wanders fast everything learned before an outage is forgotten.
@@ -56,6 +64,8 @@ public struct MotionConfig: Codable, Sendable, Equatable {
 /// The TRUSTED / SUSPECT / LOST / RECOVERING machine. Mirrors `GPSQualityConfig`.
 public struct GPSQualityConfig: Codable, Sendable, Equatable {
     public var maxHorizontalAccuracyM: Double = 50.0
+    /// Fallback measurement sigma when CoreLocation omits accuracy. A large
+    /// reported accuracy widens R; it is not itself proof of a false fix.
     /// `m` in `d_max = v*dt + 0.5*a_max*dt^2 + m`.
     public var physicalMarginM: Double = 25.0
     /// chi^2 with 2 dof at p = 0.99. Applied only while TRUSTED or SUSPECT: once
@@ -69,6 +79,13 @@ public struct GPSQualityConfig: Codable, Sendable, Equatable {
     public var recoveryCourseErrorDeg: Double = 55.0
     public var recoverySpeedMismatchMS: Double = 7.0
     public var recoveryMinStepM: Double = 8.0
+    /// Extra innovation uncertainty after loss. This keeps the Mahalanobis
+    /// gate active without forcing a plausible returning GPS fix to agree with
+    /// stale dead reckoning.
+    public var recoveryPositionSigmaM: Double = 30.0
+    public var recoveryPositionSigmaGrowthMPS: Double = 3.0
+    /// Retained for diagnostics and compatibility with exported configurations;
+    /// never a per-fix rejection gate.
     public var maxDistanceToRoadM: Double = 60.0
     /// Whole-track check: a larger median means the wrong graph.
     public var maxMedianTrackToRoadM: Double = 25.0
@@ -122,6 +139,13 @@ public struct ParticleFilterConfig: Codable, Sendable, Equatable {
     public var injectFraction: Double = 0.02
     public var divergenceLikelihood: Double = 1e-6
     public var headingSnapGain: Double = 0.35
+    /// The graph may only nudge a live IMU position while the occupied road
+    /// corridor is genuinely compact. It never becomes the trajectory sensor.
+    public var outageMapAssistMinProbability: Double = 0.85
+    public var outageMapAssistMaxSpreadM: Double = 45.0
+    public var outageMapAssistMaxAreaM2: Double = 35_000.0
+    public var outageMapAssistMaxOffsetM: Double = 120.0
+    public var outageMapAssistGain: Double = 0.45
 
     public init() {}
 }

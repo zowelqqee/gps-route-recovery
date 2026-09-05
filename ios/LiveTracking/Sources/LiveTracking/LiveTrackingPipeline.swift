@@ -97,6 +97,7 @@ public actor LiveTrackingPipeline {
     private var lastSnapshotTime: Double = -.infinity
     private var snapshotCount = 0
     private var faultModeLabel = "None"
+    private var mountDisturbanceActive = false
     /// Debug hook: when set, every aligned control is captured so the stream can
     /// be diffed against the Python baseline's.
     private var controlTrace: [IMUControl]?
@@ -440,12 +441,31 @@ public actor LiveTrackingPipeline {
         parkingControls.append(control)
         trimParkingWindow(now: control.t)
 
-        // The EKF is cheap and is what the GPS gates test against, so it runs on
-        // every control.
-        ekf?.predict(aWorld: control.aWorld, yawRate: control.yawRate, dt: control.dt)
+        // The phone may move independently of the car after an impact. Keep a
+        // constant-velocity vehicle state through the short hold, widen its
+        // covariance, and never turn the impact into car acceleration or yaw.
+        var vehicleControl = control
+        if control.isShock {
+            vehicleControl.aWorld = SIMD3<Double>(repeating: 0)
+            vehicleControl.yawRate = 0
+            ekf?.predict(aWorld: vehicleControl.aWorld, yawRate: 0, dt: control.dt)
+            ekf?.inflateForMountDisturbance(
+                positionNoiseMSqrt: config.motion.shockPositionNoiseMSqrt,
+                headingNoiseRadSqrt: config.motion.shockHeadingNoiseRadSqrt,
+                dt: control.dt
+            )
+            if !mountDisturbanceActive,
+               (ekf?.speed ?? 0) >= config.motion.shockMinVehicleSpeedMS {
+                diagnostics.mountDisturbances += 1
+            }
+            mountDisturbanceActive = true
+        } else {
+            mountDisturbanceActive = false
+            ekf?.predict(aWorld: control.aWorld, yawRate: control.yawRate, dt: control.dt)
+        }
 
         // The particle filter is the expensive one and is stepped in batches.
-        roadBatch.append(control)
+        roadBatch.append(vehicleControl)
         if roadBatchStart == nil { roadBatchStart = control.t }
         if control.t - (roadBatchStart ?? control.t) >= config.runtime.roadStepSeconds
             - config.motion.filterDT * 0.5 {
@@ -454,7 +474,7 @@ public actor LiveTrackingPipeline {
 
         // A quiet IMU only means a stop if the filter also believes it is barely
         // moving; otherwise it just means steady cruising on a straight road.
-        if control.isQuiet, let ekf, ekf.speed <= config.motion.zuptMaxSpeedMS {
+        if !control.isShock, control.isQuiet, let ekf, ekf.speed <= config.motion.zuptMaxSpeedMS {
             ekf.zeroVelocityUpdate()
             roadTracker?.zeroVelocityUpdate(maxSpeedMS: config.motion.zuptMaxSpeedMS)
         }
@@ -522,22 +542,69 @@ public actor LiveTrackingPipeline {
     }
 
     private func recordRoadPosition(at now: Double) {
-        guard let tracker = roadTracker, tracker.isInitialized, let network else { return }
+        guard let tracker = roadTracker, tracker.isInitialized, let network, let ekf else { return }
         let sinceTrusted = Swift.max(0, now - lastTrustedTime)
+        var displayed = ekf.position
 
         // Rebuilding corridors is the expensive part and the map cannot show
         // more than a couple of updates a second anyway.
         if now - lastPolygonTime >= config.runtime.polygonUpdateSeconds {
             let builder = ConfidencePolygonBuilder(network: network, config: config.polygon)
             let output = builder.build(cloud: tracker.cloud, secondsSinceTrusted: sinceTrusted)
-            lastRoadComponents = output.components
             lastPolygonTime = now
-            if let estimate = output.estimate {
-                appendRoute(t: now, point: estimate)
+            if stateMachine.state == .trusted {
+                lastRoadComponents = output.components
+            } else if let assisted = mapAssistedPosition(
+                output: output, tracker: tracker, ekfPosition: ekf.position
+            ) {
+                displayed = assisted
+                lastRoadComponents = output.components
+            } else {
+                // A broad PF cloud remains useful internally for recovery, but
+                // its merged graph corridors are not a truthful live location.
+                lastRoadComponents = []
             }
-        } else if let estimate = quickEstimate(tracker: tracker) {
-            appendRoute(t: now, point: estimate)
         }
+        appendRoute(t: now, point: displayed)
+    }
+
+    /// A causal, bounded graph prior. This is intentionally stricter than
+    /// “top component has high probability”: adjacent road buffers can merge
+    /// multiple turns into one visually connected component.
+    private func mapAssistedPosition(
+        output: ConfidencePolygonBuilder.Output, tracker: RoadTracker, ekfPosition: Point
+    ) -> Point? {
+        guard let best = output.components.first,
+              let edge = output.estimateEdge,
+              let estimate = output.estimate,
+              let network,
+              best.probability >= config.particleFilter.outageMapAssistMinProbability,
+              output.components.reduce(0, { $0 + $1.areaM2 })
+                  <= config.particleFilter.outageMapAssistMaxAreaM2
+        else { return nil }
+
+        var weight = 0.0
+        var centre = Point.zero
+        for index in tracker.cloud.edge.indices where Int(tracker.cloud.edge[index]) == edge {
+            let w = tracker.cloud.weight[index]
+            centre = centre + network.position(edge: edge, s: tracker.cloud.s[index]) * w
+            weight += w
+        }
+        guard weight > 0 else { return nil }
+        centre = centre * (1 / weight)
+        var variance = 0.0
+        for index in tracker.cloud.edge.indices where Int(tracker.cloud.edge[index]) == edge {
+            let position = network.position(edge: edge, s: tracker.cloud.s[index])
+            let delta = position - centre
+            let squaredDistance = delta.x * delta.x + delta.y * delta.y
+            variance += tracker.cloud.weight[index] * squaredDistance
+        }
+        let spread = (variance / weight).squareRoot()
+        guard spread <= config.particleFilter.outageMapAssistMaxSpreadM,
+              estimate.distance(to: ekfPosition) <= config.particleFilter.outageMapAssistMaxOffsetM
+        else { return nil }
+        let gain = config.particleFilter.outageMapAssistGain
+        return ekfPosition * (1 - gain) + estimate * gain
     }
 
     /// Cheap between-polygon estimate: the weighted mean along the single
@@ -581,6 +648,10 @@ public actor LiveTrackingPipeline {
         _ sample: TrackerLocation, point: Point, decision: GateDecision
     ) {
         guard let ekf else { return }
+        // RECOVERING fixes are evidence for the state machine only. Updating
+        // either filter before the full chain is confirmed creates a visible
+        // cross-city jump to a single false recovery candidate.
+        guard decision.state == .trusted else { return }
         let sigma = GPSGate.measurementSigma(sample, config: config.gps)
         let courseRad: Double? = (
             sample.hasValidCourse && sample.hasValidSpeed
@@ -792,6 +863,7 @@ public actor LiveTrackingPipeline {
                 "Calibration incomplete (no straight-line drive): heading alignment is approximate."
         }
         snapshot.faultMode = faultModeLabel
+        snapshot.mountDisturbanceActive = mountDisturbanceActive
         return snapshot
     }
 

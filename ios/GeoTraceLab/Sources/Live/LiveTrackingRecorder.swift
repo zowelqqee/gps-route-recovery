@@ -254,7 +254,7 @@ public final class LiveTrackingRecorder: ObservableObject {
               calibration.gravityDevice.count == 3,
               calibration.forwardAxisDevice == nil || calibration.forwardAxisDevice?.count == 3
         else { return nil }
-        TrackerCalibration(
+        return TrackerCalibration(
             referenceQuaternion: SIMD4(
                 calibration.referenceQuaternion[0], calibration.referenceQuaternion[1],
                 calibration.referenceQuaternion[2], calibration.referenceQuaternion[3]

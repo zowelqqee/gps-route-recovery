@@ -262,17 +262,55 @@ def _run_tracking_pipeline(
     previous_state = monitor.state
     reanchors: list[dict[str, Any]] = []
     map_assists: list[dict[str, Any]] = []
+    shock_events: list[dict[str, Any]] = []
+    active_shock: Optional[dict[str, Any]] = None
     next_output = trip.t0
     controls = imu.controls if imu.controls else _synthetic_controls(fixes, cfg)
 
     for control in controls:
         t = control.t
-        ekf.predict(control.a_world, control.yaw_rate, control.dt)
+        if control.is_shock:
+            # The phone may have moved independently of the car. Preserve the
+            # vehicle's existing constant-velocity prediction, but do not turn
+            # the impact into acceleration/yaw and make its uncertainty honest.
+            ekf.predict((0.0, 0.0, 0.0), 0.0, control.dt)
+            ekf.inflate_for_mount_disturbance(
+                cfg.motion.shock_position_noise_mpsqrt,
+                cfg.motion.shock_heading_noise_radsqrt,
+                control.dt,
+            )
+            report_shock = ekf.speed >= cfg.motion.shock_min_vehicle_speed_ms
+            if report_shock and active_shock is None:
+                lat, lon = frame.to_geo(*ekf.position)
+                active_shock = {
+                    "start_s": round(t - trip.t0, 2),
+                    "latitude": lat,
+                    "longitude": lon,
+                    "peak_accel_ms2": control.peak_accel_ms2,
+                    "peak_gyro_rads": control.peak_gyro_rads,
+                }
+            elif report_shock:
+                active_shock["peak_accel_ms2"] = max(
+                    active_shock["peak_accel_ms2"], control.peak_accel_ms2
+                )
+                active_shock["peak_gyro_rads"] = max(
+                    active_shock["peak_gyro_rads"], control.peak_gyro_rads
+                )
+            elif active_shock is not None:
+                active_shock["end_s"] = round(t - trip.t0, 2)
+                shock_events.append(active_shock)
+                active_shock = None
+        else:
+            if active_shock is not None:
+                active_shock["end_s"] = round(t - trip.t0, 2)
+                shock_events.append(active_shock)
+                active_shock = None
+            ekf.predict(control.a_world, control.yaw_rate, control.dt)
         # A quiet IMU only means a stop if we also believe we are barely
         # moving; otherwise it just means steady cruising.
         #
         # GPS trust is deliberately evaluated before the road filter advances.
-        if control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
+        if not control.is_shock and control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
             ekf.zero_velocity_update()
 
         monitor.note_gap(t)
@@ -280,8 +318,12 @@ def _run_tracking_pipeline(
             # The particle cloud keeps moving through the road graph during an
             # outage, but is never reweighted by absent or rejected GPS.  It is
             # therefore a causal map prior, not retrospective map matching.
-            pf.predict(control.a_world, control.yaw_rate, control.dt)
-            if control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
+            pf.predict(
+                (0.0, 0.0, 0.0) if control.is_shock else control.a_world,
+                0.0 if control.is_shock else control.yaw_rate,
+                control.dt,
+            )
+            if not control.is_shock and control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
                 pf.zero_velocity_update(cfg.motion.zupt_max_speed_ms)
 
         while fix_cursor < len(fixes) and fixes[fix_cursor].monotonic_time <= t:
@@ -441,12 +483,21 @@ def _run_tracking_pipeline(
                     gps_state=monitor.state.value,
                     seconds_since_trusted=since_trusted,
                 )
-                uncertainty.append(unc)
                 displayed_xy = ekf.position
-                if monitor.state is not GPSState.TRUSTED:
+                if monitor.state is GPSState.TRUSTED:
+                    # A trusted observation has just constrained the particle
+                    # cloud, so its road corridors are an honest uncertainty
+                    # visualisation.
+                    uncertainty.append(unc)
+                else:
                     assist = _outage_map_assist(network, pf, unc, ekf.position, cfg)
                     if assist is not None:
                         displayed_xy, map_xy, probability, spread = assist
+                        # The same proof that permits a bounded map nudge also
+                        # permits presenting a road-graph corridor.  Once it
+                        # fails, rendering a merged graph component as a
+                        # 95%-likely branch would be false confidence.
+                        uncertainty.append(unc)
                         map_assists.append(
                             {
                                 "t": round(t - trip.t0, 2),
@@ -454,6 +505,18 @@ def _run_tracking_pipeline(
                                 "spread_m": round(spread, 2),
                                 "map_offset_m": round(float(math.dist(map_xy, ekf.position)), 2),
                             }
+                        )
+                    else:
+                        uncertainty.append(
+                            _circular_uncertainty(
+                                t,
+                                ekf.position,
+                                ekf,
+                                cfg,
+                                monitor.state.value,
+                                since_trusted,
+                                "imu_dead_reckoning",
+                            )
                         )
                 tracks["road_particle_filter"].add(t, displayed_xy)
             elif algorithm == "road_particle_filter":
@@ -481,6 +544,9 @@ def _run_tracking_pipeline(
             next_output += output_dt
 
     elapsed = time.perf_counter() - started
+    if active_shock is not None:
+        active_shock["end_s"] = round(trip.duration_s, 2)
+        shock_events.append(active_shock)
     outage_windows = _outage_windows(monitor.history, trip.t0, cfg)
     road_track = tracks.get("road_particle_filter") or tracks["ekf_dead_reckoning"]
     parking_end = trip.t0 + trip.duration_s
@@ -528,6 +594,14 @@ def _run_tracking_pipeline(
         "ekf": {"skipped_gaps": ekf.skipped_gaps, "final_state": ekf.state_json()},
         "reanchors": reanchors,
         "outage_map_assists": map_assists,
+        "imu_shocks": [
+            {
+                **item,
+                "peak_accel_ms2": round(float(item["peak_accel_ms2"]), 2),
+                "peak_gyro_rads": round(float(item["peak_gyro_rads"]), 3),
+            }
+            for item in shock_events
+        ],
         "runtime_s": round(elapsed, 3),
         "road_graph": (
             None
@@ -655,6 +729,8 @@ def _outage_map_assist(
         return None
     probability = float(best.probability)
     if probability < cfg.pf.outage_map_assist_min_probability:
+        return None
+    if uncertainty.total_area_m2 > cfg.pf.outage_map_assist_max_area_m2:
         return None
 
     member = best.particle_indices

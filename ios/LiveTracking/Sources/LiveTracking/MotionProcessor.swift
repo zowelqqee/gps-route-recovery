@@ -20,10 +20,16 @@ public struct IMUControl: Sendable, Equatable {
     /// The source samples were further apart than `maxGapSeconds`. Integrating
     /// across such a step invents position, so trackers must refuse it.
     public var gapExceeded: Bool
+    /// A likely handset/mount impact. The vehicle filters must preserve their
+    /// current motion rather than integrating this as a car manoeuvre.
+    public var isShock: Bool
+    public var peakAccelMS2: Double
+    public var peakGyroRadS: Double
 
     public init(
         t: Double, dt: Double, aWorld: SIMD3<Double>, yawRate: Double,
-        isQuiet: Bool = false, gapExceeded: Bool = false
+        isQuiet: Bool = false, gapExceeded: Bool = false,
+        isShock: Bool = false, peakAccelMS2: Double = 0, peakGyroRadS: Double = 0
     ) {
         self.t = t
         self.dt = dt
@@ -31,6 +37,9 @@ public struct IMUControl: Sendable, Equatable {
         self.yawRate = yawRate
         self.isQuiet = isQuiet
         self.gapExceeded = gapExceeded
+        self.isShock = isShock
+        self.peakAccelMS2 = peakAccelMS2
+        self.peakGyroRadS = peakGyroRadS
     }
 
     /// Longitudinal projection: `a_par = a_E cos(psi) + a_N sin(psi)`.
@@ -104,7 +113,11 @@ public final class MotionProcessor {
     private var binCount: Int = 0
     private var binQuietCount: Int = 0
     private var binMaxGap: Double = 0
+    private var binHasShock = false
+    private var binPeakAccelMS2: Double = 0
+    private var binPeakGyroRadS: Double = 0
     private var lastSampleTime: Double?
+    private var shockUntil: Double = -.infinity
 
     /// Start of the current uninterrupted run of quiet samples.
     private var quietRunStart: Double?
@@ -153,6 +166,13 @@ public final class MotionProcessor {
                 + sample.rotationRate.y * sample.rotationRate.y
                 + sample.rotationRate.z * sample.rotationRate.z
         ).squareRoot()
+        let accelMagnitude = (
+            aWorld.x * aWorld.x + aWorld.y * aWorld.y + aWorld.z * aWorld.z
+        ).squareRoot()
+        if accelMagnitude >= config.shockAccelMS2 || gyroMagnitude >= config.shockGyroRadS {
+            shockUntil = Swift.max(shockUntil, sample.monotonicTime + config.shockHoldSeconds)
+        }
+        let shockActive = sample.monotonicTime <= shockUntil
         let instantaneouslyQuiet = horizontalMagnitude < config.zuptAccelMS2
             && gyroMagnitude < config.zuptGyroRadS
         if instantaneouslyQuiet {
@@ -194,6 +214,11 @@ public final class MotionProcessor {
         yawSum += yaw
         binCount += 1
         if quietLongEnough { binQuietCount += 1 }
+        if shockActive {
+            binHasShock = true
+            binPeakAccelMS2 = Swift.max(binPeakAccelMS2, accelMagnitude)
+            binPeakGyroRadS = Swift.max(binPeakGyroRadS, gyroMagnitude)
+        }
         lastSampleTime = sample.monotonicTime
         return emitted
     }
@@ -212,13 +237,19 @@ public final class MotionProcessor {
             aWorld: accelSum / Double(binCount),
             yawRate: yawSum / Double(binCount),
             isQuiet: binQuietCount == binCount,
-            gapExceeded: binMaxGap > config.maxGapSeconds
+            gapExceeded: binMaxGap > config.maxGapSeconds,
+            isShock: binHasShock,
+            peakAccelMS2: binPeakAccelMS2,
+            peakGyroRadS: binPeakGyroRadS
         )
         accelSum = SIMD3(repeating: 0)
         yawSum = 0
         binCount = 0
         binQuietCount = 0
         binMaxGap = 0
+        binHasShock = false
+        binPeakAccelMS2 = 0
+        binPeakGyroRadS = 0
         return control
     }
 

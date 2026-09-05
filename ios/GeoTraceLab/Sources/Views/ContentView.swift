@@ -28,13 +28,25 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            TripMapView(route: recorder.route, layers: layers, results: results, position: $camera)
+            TripMapView(
+                route: recorder.route,
+                layers: layers,
+                results: results,
+                live: recorder.state == .recording || recorder.isFinishing
+                    ? recorder.live.snapshot : nil,
+                position: $camera
+            )
                 .ignoresSafeArea(edges: .top)
 
             VStack(alignment: .leading, spacing: 10) {
                 statusCard
                 LayerToggleView(
-                    layers: $layers, results: results, hasRoute: recorder.route.count > 1)
+                    layers: $layers,
+                    results: results,
+                    hasRoute: recorder.route.count > 1,
+                    live: recorder.state == .recording || recorder.isFinishing
+                        ? recorder.live.snapshot : nil
+                )
             }
             .padding(.horizontal, 14)
             .padding(.top, 8)
@@ -109,6 +121,21 @@ struct ContentView: View {
                 metric("Fixes", "\(recorder.locationCount)")
                 metric("Motion", "\(recorder.motionCount)")
                 if recorder.photoCount > 0 { metric("Photos", "\(recorder.photoCount)") }
+            }
+
+            if recorder.state == .recording {
+                let live = recorder.live.snapshot
+                HStack(spacing: 16) {
+                    metric("Filter", live.gpsState.rawValue)
+                    metric("Road", "\(live.particleCount) particles")
+                    metric("Confidence", String(format: "%.0f%%", live.roadConfidence * 100))
+                }
+                if live.mountDisturbanceActive {
+                    Label("Phone or mount disturbance: IMU is temporarily isolated.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
             if recorder.needsLocationPermission {

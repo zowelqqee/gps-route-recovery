@@ -81,6 +81,18 @@ def test_acceleration_unit_conversion() -> None:
     assert sample.user_acceleration_ms2 == pytest.approx((1.1768, -0.2942, 0.0981), abs=1e-4)
 
 
+def test_impact_marks_a_short_mount_disturbance_hold() -> None:
+    samples = [
+        MotionSample(monotonic_time=0.00, user_acceleration_g=(0.0, 0.0, 0.0), rotation_rate=(0, 0, 0)),
+        MotionSample(monotonic_time=0.05, user_acceleration_g=(10.0 / 9.80665, 0.0, 0.0), rotation_rate=(0, 0, 0)),
+        MotionSample(monotonic_time=0.15, user_acceleration_g=(0.0, 0.0, 0.0), rotation_rate=(0, 0, 0)),
+    ]
+    stream = build_imu_stream(samples, MotionConfig(filter_dt_s=0.1, shock_hold_s=0.2))
+    assert stream.controls[0].is_shock
+    assert stream.controls[0].peak_accel_ms2 == pytest.approx(10.0)
+    assert stream.controls[1].is_shock
+
+
 # --------------------------------------------------------- state transition
 
 

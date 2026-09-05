@@ -134,6 +134,18 @@ public final class DeadReckoningEKF {
         P = next
     }
 
+    /// Keep the constant-velocity state through a likely phone/mount impact,
+    /// while explicitly widening what the filter admits it no longer knows.
+    public func inflateForMountDisturbance(
+        positionNoiseMSqrt: Double, headingNoiseRadSqrt: Double, dt: Double
+    ) {
+        guard dt > 0 else { return }
+        P[Self.idxE, Self.idxE] += positionNoiseMSqrt * positionNoiseMSqrt * dt
+        P[Self.idxN, Self.idxN] += positionNoiseMSqrt * positionNoiseMSqrt * dt
+        P[Self.idxPsi, Self.idxPsi] += headingNoiseRadSqrt * headingNoiseRadSqrt * dt
+        P.symmetrise()
+    }
+
     /// The transition from the specification:
     ///
     ///     psi_bar   = psi + 0.5 w_hat dt

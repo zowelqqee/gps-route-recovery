@@ -1,0 +1,41 @@
+{
+  "format": "GTRGRAPH",
+  "format_version": 1,
+  "nodes": 18755,
+  "edges": 41310,
+  "polyline_points": 289996,
+  "bounds": {
+    "min_latitude": 59.6467689,
+    "min_longitude": 29.4430978,
+    "max_latitude": 60.2440553,
+    "max_longitude": 30.7291425
+  },
+  "grid": {
+    "cols": 288,
+    "rows": 267,
+    "cell_size_m": 250.0,
+    "cell_latitude_deg": 0.002249577079509052,
+    "cell_longitude_deg": 0.004484158190881171,
+    "entries": 83435
+  },
+  "road_classes": [
+    "motorway",
+    "motorway_link",
+    "trunk",
+    "trunk_link",
+    "primary",
+    "primary_link",
+    "secondary",
+    "secondary_link",
+    "tertiary",
+    "tertiary_link",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service",
+    "road",
+    "unknown"
+  ],
+  "bytes": 7143616,
+  "sha256": "a517ea8f11e43a54c80e45423c7231ad3887b1eca0e6e7c998e6e1fe08779076"
+}

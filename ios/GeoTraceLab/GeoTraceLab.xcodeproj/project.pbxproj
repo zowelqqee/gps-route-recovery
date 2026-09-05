@@ -62,7 +62,7 @@
 		6284A954B4C0584FF12EFB31 /* TripStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStorageTests.swift; sourceTree = "<group>"; };
 		62E05A7CA57C38FD20AC1AB4 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		685C369069FA50428B427AC3 /* CalibrationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationManager.swift; sourceTree = "<group>"; };
-		6E3610F1C8379FACDA75A59B /* GeoTraceLab.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GeoTraceLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6E3610F1C8379FACDA75A59B /* GeoTraceLab.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GeoTraceLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		78AA6E349E7EC6EDD7EEF32F /* spb-graph-metadata.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "spb-graph-metadata.json"; sourceTree = "<group>"; };
 		80176C5AEE5BDE69DE4856F2 /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
 		8F41EE7289DBC08637BD2482 /* TripExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripExporter.swift; sourceTree = "<group>"; };
@@ -74,7 +74,7 @@
 		B106C01708D8C7FED048E91D /* TripMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripMapView.swift; sourceTree = "<group>"; };
 		B57CFEADAAC54009DD853A76 /* GeoTraceLabTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = GeoTraceLabTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C904A6B5FCF9702CB8E4CFF4 /* GeoJSONImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoJSONImporterTests.swift; sourceTree = "<group>"; };
-		D9729CBB6273D4DFE70915AD /* spb.geograph */ = {isa = PBXFileReference; path = spb.geograph; sourceTree = "<group>"; };
+		D9729CBB6273D4DFE70915AD /* spb.geograph */ = {isa = PBXFileReference; lastKnownFileType = file; path = spb.geograph; sourceTree = "<group>"; };
 		DB726363E497A13C680590A4 /* MotionRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionRecorder.swift; sourceTree = "<group>"; };
 		E6D3ABBF7D2C14DE59417030 /* TripRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripRecorder.swift; sourceTree = "<group>"; };
 		EF61F659111CA886924FF0EF /* PhotoSaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSaver.swift; sourceTree = "<group>"; };
@@ -295,8 +295,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = A011C16F25D88DCAB092851F /* Build configuration list for PBXProject "GeoTraceLab" */;
 			developmentRegion = en;
@@ -390,6 +388,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5NBHFY736Q;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -407,6 +406,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 5NBHFY736Q;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
