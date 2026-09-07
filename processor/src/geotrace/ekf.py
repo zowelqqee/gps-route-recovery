@@ -82,7 +82,26 @@ class ExtendedKalmanFilter:
 
     # ------------------------------------------------------------- predict
 
-    def predict(self, a_world: Sequence[float], yaw_rate: float, dt: float) -> None:
+    def predict(
+        self,
+        a_world: Sequence[float],
+        yaw_rate: float,
+        dt: float,
+        deadband: bool = False,
+        yaw_trust: float = 1.0,
+    ) -> None:
+        """``deadband`` coasts at the current speed instead of integrating an
+        acceleration too small to tell apart from residual accelerometer bias
+        (see ``MotionConfig.accel_deadband_ms2``). Leave it off whenever GPS
+        can corroborate the estimate - it trades bias-learning sensitivity for
+        immunity to long-run drift, which is only worth it when nothing else
+        can rein that drift in.
+
+        ``yaw_trust`` discounts the measured yaw rate for a while after a
+        shock (see ``MotionConfig.shock_heading_recovery_s``): a shock can
+        leave the phone at a new angle in its mount, and the gyro then
+        measures that real rotation - of the phone, not necessarily the car.
+        """
         if dt <= 0:
             return
         if dt > self.cfg.max_gap_s:
@@ -96,10 +115,10 @@ class ExtendedKalmanFilter:
             return
 
         a_long = longitudinal_acceleration(a_world, float(self.x[IDX_PSI]))
-        F = transition_jacobian(self.x, a_long, yaw_rate, dt, self.cfg)
+        F = transition_jacobian(self.x, a_long, yaw_rate, dt, self.cfg, deadband, yaw_trust)
         G = noise_jacobian(self.x, dt)
         Q = process_noise(dt, self.cfg)
-        self.x = propagate_state(self.x, a_long, yaw_rate, dt, self.cfg)
+        self.x = propagate_state(self.x, a_long, yaw_rate, dt, self.cfg, deadband, yaw_trust)
         self.P = F @ self.P @ F.T + G @ Q @ G.T
         self.P = 0.5 * (self.P + self.P.T)
 
@@ -132,6 +151,20 @@ class ExtendedKalmanFilter:
         H[0, IDX_PSI] = 1.0
         residual = np.array([wrap_angle(heading_rad - float(self.x[IDX_PSI]))])
         self._scalar_update(H, residual, sigma)
+
+    def nudge_heading(self, target_heading_rad: float, gain: float) -> None:
+        """Partially rotate psi's mean towards ``target_heading_rad``.
+
+        Unlike `update_heading`, this touches only the psi mean - not P, and
+        not (via P's cross-terms) position or any other state. An ordinary
+        Kalman update on heading also drags position along whatever
+        position-heading correlation predict() has accumulated in P, which is
+        right for a real independent measurement (a GPS course) but wrong for
+        `RoadParticleFilter.heading_consensus`: that carries no position
+        information of its own, it only says which way the road runs.
+        """
+        diff = wrap_angle(target_heading_rad - float(self.x[IDX_PSI]))
+        self.x[IDX_PSI] = wrap_angle(float(self.x[IDX_PSI]) + gain * diff)
 
     def zero_velocity_update(self, sigma: float = 0.05) -> None:
         """ZUPT: while the car is provably still, v is 0 and the residual

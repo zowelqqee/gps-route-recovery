@@ -327,3 +327,45 @@ def test_a_graph_for_the_wrong_area_is_warned_about(fork_network: RoadNetwork) -
     assert fit["median_track_to_road_m"] > cfg.gps.max_median_track_to_road_m
     assert "warning" in fit
     assert "does not cover" in fit["warning"]
+
+
+def test_trusted_gps_far_from_every_edge_is_not_reported_as_a_road_corridor(
+    fork_network: RoadNetwork,
+) -> None:
+    """A car parked in a courtyard, or driving down a private lane the graph
+    was never given, still produces a perfectly self-consistent, trusted GPS
+    stream - just one nowhere near a known edge. The particle filter is still
+    forced onto whichever real edge is nearest, which can be hundreds of
+    metres away; the output must not dress that up as a 95%-confident
+    corridor on a street the car was never on."""
+    spec = SimulationSpec(duration_s=70.0, cruise_speed_ms=5.0, warmup_still_s=5.0)
+    trip = simulate_trip(
+        fork_network, spec, seed=3, route=[edge_named(fork_network, "Stem", (0.0, 0.0))]
+    )
+    offset_north_m = 150.0
+    broken, _ = inject_faults(
+        trip,
+        [FaultSpec(kind="offset", start_s=25.0, duration_s=25.0, north=offset_north_m)],
+        seed=3,
+        frame=fork_network.frame,
+    )
+    cfg = Config()
+    cfg.seed = 3
+    cfg.pf.n_particles = 2000
+    result = run_reconstruction(broken, fork_network, cfg)
+
+    # Give the trust monitor a few seconds after the jump to reanchor and
+    # settle before judging its output.
+    window = (broken.t0 + 32.0, broken.t0 + 45.0)
+    off_road = [
+        u for u in result.uncertainty
+        if u.gps_state == "TRUSTED" and window[0] <= u.t <= window[1]
+    ]
+    assert off_road, "expected TRUSTED output inside the offset window"
+    for u in off_road:
+        best = u.best
+        assert best is not None
+        assert best.street_names == [], (
+            "a trusted fix >60 m from every edge must fall back to a plain "
+            "disc, not a named-road corridor"
+        )

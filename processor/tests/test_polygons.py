@@ -244,6 +244,23 @@ def test_geojson_output_is_wgs84_and_well_formed(fork_network: RoadNetwork) -> N
         assert 29.0 < lon < 32.0 and 59.0 < lat < 61.0
 
 
+def test_geojson_t_is_trip_relative_not_raw_monotonic(fork_network: RoadNetwork) -> None:
+    """The exported "t" must match every other diagnostic's convention
+    (seconds since trip start), not the raw monotonic clock `UncertaintySet.t`
+    is built with - a real device's monotonic time starts in the tens of
+    thousands of seconds, so leaving it unconverted here silently mislabels
+    which moment of the trip a polygon belongs to."""
+    edge_idx, s, weights = _fork_cloud(fork_network)
+    raw_t = 13842.5
+    trip_t0 = 13800.0
+    result = build_uncertainty_set(
+        fork_network, edge_idx, s, weights, CFG, t=raw_t, seconds_since_trusted=30.0
+    )
+    collection = uncertainty_to_geojson([result], fork_network.frame, t0=trip_t0)
+    for feature in collection["features"]:
+        assert feature["properties"]["t"] == pytest.approx(raw_t - trip_t0)
+
+
 def test_component_json_matches_the_documented_shape(fork_network: RoadNetwork) -> None:
     edge_idx, s, weights = _fork_cloud(fork_network)
     result = build_uncertainty_set(fork_network, edge_idx, s, weights, CFG,

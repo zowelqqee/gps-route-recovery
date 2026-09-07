@@ -1,0 +1,32 @@
+{
+  "app_version" : "0.1.0",
+  "calibration" : {
+    "captured_at" : "2026-09-05T13:03:38.912Z",
+    "forward_axis_device" : [
+      -0.4785711525904035,
+      -0.12830606932830224,
+      -0.8686234901825102
+    ],
+    "gravity_device" : [
+      0.17003492372376577,
+      -0.9833168770585742,
+      0.06460091950637954
+    ],
+    "heading_source" : "gps_course",
+    "initial_heading_deg" : 152.53391217546485,
+    "reference_quaternion" : [
+      -0.55311058321803,
+      -0.5102982192262917,
+      -0.5225602578353054,
+      -0.4007433624463276
+    ],
+    "still_duration_s" : 6
+  },
+  "device_model" : "iPhone",
+  "ended_at" : "2026-09-05T13:38:16.706Z",
+  "location_sample_count" : 1985,
+  "motion_sample_count" : 103357,
+  "os_version" : "26.4.2",
+  "started_at" : "2026-09-05T13:03:38.935Z",
+  "trip_id" : "trip-0a9bf7db-400d-4125-a2bb-75fb3200d373"
+}

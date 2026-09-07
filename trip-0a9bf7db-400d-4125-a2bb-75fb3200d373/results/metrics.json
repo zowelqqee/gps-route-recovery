@@ -1,0 +1,108 @@
+{
+  "algorithm": "road_particle_filter",
+  "has_reference_track": false,
+  "position_error": {
+    "available": false
+  },
+  "baselines": {},
+  "polygons": {
+    "mean_area_m2": 5734.161087906953,
+    "coverage_95": null,
+    "note": "coverage requires a reference track"
+  },
+  "branches": {
+    "mean_branch_count": 1.0938402309913378,
+    "top1_accuracy": null,
+    "top3_recall": null
+  },
+  "gps_gates": {
+    "fixes_tested": 1985,
+    "fixes_accepted": 1795,
+    "fixes_rejected": 190,
+    "rejected_good_fraction": null,
+    "accepted_false_fraction": null,
+    "note": "No fault manifest available, so 'good' and 'false' fixes cannot be distinguished. Both rates require a synthetically corrupted trip."
+  },
+  "trust_recovery": {
+    "recovery_events": 43,
+    "mean_recovery_s": 2.99640850410905,
+    "max_recovery_s": 3.894120931625366,
+    "recoveries_s": [
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      2.99,
+      3.89,
+      3.0,
+      3.0,
+      1.96,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0,
+      3.0
+    ]
+  },
+  "parking": {
+    "status": "CONFIDENT",
+    "position": {
+      "latitude": 59.87237818599015,
+      "longitude": 30.344104268100075
+    },
+    "covariance_m2": [
+      [
+        230.506,
+        0.0
+      ],
+      [
+        0.0,
+        230.506
+      ]
+    ],
+    "confidence": 0.95,
+    "polygon_radius_m": 15.18,
+    "terminal_cluster_fixes": 30,
+    "rejected_fixes": 0,
+    "has_reverse_motion": true,
+    "reason": "robust low-speed terminal GPS cluster",
+    "max_distance_from_road_m": 37.25426568321257
+  },
+  "runtime": {
+    "seconds": 104.816,
+    "particles": 5000,
+    "seed": 42
+  },
+  "notes": [
+    "No reference track: this trip was not synthetically corrupted, so there is no ground truth and position error is undefined. The reconstruction is a probabilistic estimate, not a measurement."
+  ]
+}

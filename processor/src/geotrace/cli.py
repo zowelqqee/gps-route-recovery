@@ -427,7 +427,10 @@ def _write_outputs(
             },
         ),
     )
-    _write_json(out / "uncertainty-polygons.geojson", uncertainty_to_geojson(result.uncertainty, frame))
+    _write_json(
+        out / "uncertainty-polygons.geojson",
+        uncertainty_to_geojson(result.uncertainty, frame, t0=trip.t0),
+    )
     if result.parking_result is not None:
         parking = result.parking_result
         trajectory = frame.coords_to_geojson(parking.trajectory)

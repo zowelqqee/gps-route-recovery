@@ -9,13 +9,16 @@ import pytest
 
 from geotrace.config import Config
 from geotrace.coordinates import wrap_angle
+from geotrace.ekf import ExtendedKalmanFilter
 from geotrace.particle_filter import (
     RoadParticleFilter,
     effective_sample_size,
     normalize_weights,
     systematic_resample,
 )
+from geotrace.pipeline import _outage_heading_assist
 from geotrace.road_graph import RoadNetwork
+from geotrace.road_graph import TurnRestriction
 
 from conftest import edge_named
 
@@ -179,6 +182,147 @@ def test_particles_advance_along_the_edge(fork_network, config) -> None:
     assert after - before == pytest.approx(10.0, rel=0.15)
 
 
+def test_acceleration_is_projected_on_the_road_not_free_heading(fork_network, config) -> None:
+    """A wrong gyro heading must not move a route particle off its road model."""
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=0.0)
+    pf.v[:] = 0.0
+    pf.b_a[:] = 0.0
+    pf.psi[:] = math.pi / 2.0  # deliberately wrong: road points east
+    pf.pf.sigma_s = 0.0
+    pf.pf.sigma_v = 0.0
+    before = pf.positions()[:, 0].copy()
+    for _ in range(10):
+        pf.predict((2.0, 0.0, 0.0), 0.0, 0.1)
+    after = pf.positions()[:, 0]
+    assert np.all(after > before + 0.5)
+
+
+# ------------------------------------------------------- heading consensus
+
+
+def test_heading_consensus_is_none_before_initialisation(fork_network, config) -> None:
+    pf = make_filter(fork_network, config)
+    assert pf.heading_consensus() is None
+
+
+def test_heading_consensus_is_confident_on_a_single_road(fork_network, config) -> None:
+    """Every particle sits on the Stem, which runs due east: bearing 0."""
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=10.0)
+    bearing, resultant = pf.heading_consensus()
+    assert resultant > 0.99
+    assert bearing == pytest.approx(0.0, abs=0.05)
+
+
+def test_heading_consensus_is_uncertain_when_the_cloud_splits_at_a_fork(
+    fork_network, config
+) -> None:
+    """Branch A and B leave the junction in genuinely different directions;
+    an even split must not read as a confident, single direction."""
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=10.0)
+    half = len(pf.edge_idx) // 2
+    pf.edge_idx[:half] = branch_a
+    pf.edge_idx[half:] = branch_b
+    pf.s[:] = 50.0
+    pf.w[:] = 1.0 / len(pf.w)
+    _bearing, resultant = pf.heading_consensus()
+    assert resultant < config.pf.outage_heading_assist_min_resultant
+
+
+# --------------------------------------------------- outage heading assist
+
+
+def _ekf(config: Config, heading: float = 0.0) -> ExtendedKalmanFilter:
+    return ExtendedKalmanFilter(config.motion, initial_state=[0.0, 0.0, 10.0, heading, 0.0, 0.0])
+
+
+def test_outage_heading_assist_corrects_a_small_plausible_drift(fork_network, config) -> None:
+    """A confident consensus close to the EKF's own heading is exactly the
+    case this exists for: a fine correction of a small, plausible drift."""
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=10.0)  # Stem, bearing 0
+    ekf = _ekf(config, heading=math.radians(10.0))  # a small, plausible drift
+    bearing = _outage_heading_assist(pf, ekf, config)
+    assert bearing is not None
+    assert bearing == pytest.approx(0.0, abs=0.05)
+
+
+def test_outage_heading_assist_is_none_when_the_cloud_is_undecided(fork_network, config) -> None:
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=10.0)
+    half = len(pf.edge_idx) // 2
+    pf.edge_idx[:half] = branch_a
+    pf.edge_idx[half:] = branch_b
+    pf.s[:] = 50.0
+    pf.w[:] = 1.0 / len(pf.w)
+    ekf = _ekf(config, heading=0.0)
+    assert _outage_heading_assist(pf, ekf, config) is None
+
+
+def test_outage_heading_assist_never_overrides_a_confidently_wrong_branch(
+    fork_network, config
+) -> None:
+    """The failure this exists to fix (trip-b4faeae0-a941-4a87-9b18-de7aaa84f721,
+    a 373 s outage): the cloud can be confidently, unanimously wrong after a
+    long enough blind stretch. Agreement alone (resultant) must not be enough
+    - it must also already roughly agree with the EKF's own independent
+    heading, or it is refused outright rather than redirecting the estimate
+    wholesale."""
+    pf = make_filter(fork_network, config, n=200)
+    pf.initialize((100.0, 0.0), heading=0.0, speed=10.0)  # Stem, bearing 0
+    ekf = _ekf(config, heading=math.radians(170.0))  # a wholesale disagreement
+    assert _outage_heading_assist(pf, ekf, config) is None
+
+
+def test_no_turn_restriction_removes_a_successor(fork_network, config) -> None:
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    fork_network.turn_restrictions = (
+        TurnRestriction(
+            kind="no",
+            from_edge=fork_network.edges[stem].edge_id,
+            via_edges=(),
+            to_edge=fork_network.edges[branch_a].edge_id,
+        ),
+    )
+    fork_network.restriction_history_limit = 2
+    fork_network._restrictions_by_trigger_edge = fork_network._index_turn_restrictions(
+        fork_network.turn_restrictions
+    )
+    allowed = fork_network.allowed_successors(stem, history=(stem,))
+    assert branch_a not in allowed
+    assert branch_b in allowed
+
+
+def test_only_turn_restriction_keeps_a_single_successor(fork_network, config) -> None:
+    """`only_*` must narrow the choice down to its `to` edge, not just add it."""
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    fork_network.turn_restrictions = (
+        TurnRestriction(
+            kind="only",
+            from_edge=fork_network.edges[stem].edge_id,
+            via_edges=(),
+            to_edge=fork_network.edges[branch_a].edge_id,
+        ),
+    )
+    fork_network.restriction_history_limit = 2
+    fork_network._restrictions_by_trigger_edge = fork_network._index_turn_restrictions(
+        fork_network.turn_restrictions
+    )
+    allowed = fork_network.allowed_successors(stem, history=(stem,))
+    assert set(allowed) == {branch_a}
+    assert branch_b not in allowed
+
+
 def test_a_stationary_cloud_stays_put(fork_network, config) -> None:
     pf = make_filter(fork_network, config)
     pf.initialize((100.0, 0.0), heading=0.0, speed=0.0)
@@ -338,3 +482,79 @@ def test_the_same_seed_gives_bit_identical_results(fork_network: RoadNetwork) ->
 
 def test_a_different_seed_gives_a_different_run(fork_network: RoadNetwork) -> None:
     assert not np.array_equal(_run(fork_network, 42), _run(fork_network, 43))
+
+
+# --------------------------------------------------------- reinit continuity
+
+
+@pytest.fixture
+def river_banks_network():
+    """Two parallel streets 20 m apart that never connect - a narrow river
+    between them. A fix at (10, 50) is exactly equidistant from both with
+    identical bearing, so any preference for one over the other in a re-seed
+    can only come from route continuity, not geometry."""
+    from geotrace.road_graph import build_graph_from_segments
+
+    segments = [
+        ("Bank A", [(0.0, 0.0), (0.0, 100.0)], {"highway": "secondary"}),
+        ("Bank B", [(20.0, 0.0), (20.0, 100.0)], {"highway": "secondary"}),
+    ]
+    graph, frame = build_graph_from_segments(segments, 59.9311, 30.3609)
+    return RoadNetwork(graph, frame)
+
+
+def test_reinit_prefers_the_edge_connected_to_where_the_cloud_already_was(
+    river_banks_network, config
+) -> None:
+    """The bug this guards: a geometric tie between two disconnected roads
+    either side of a river must break towards the bank the car was already
+    on, not lock onto the wrong one forever."""
+    net = river_banks_network
+    bank_a = edge_named(net, "Bank A", (0.0, 0.0))
+    bank_b = edge_named(net, "Bank B", (20.0, 0.0))
+    pf = make_filter(net, config, n=2000)
+
+    pf.initialize((10.0, 50.0), heading=math.pi / 2, speed=0.0, previous_edges=[bank_a])
+    on_a = int(np.sum(pf.edge_idx == bank_a))
+    on_b = int(np.sum(pf.edge_idx == bank_b))
+    assert on_a > on_b, "a geometric tie must break towards the connected bank"
+    assert on_a > 0.7 * (on_a + on_b)
+
+
+def test_reinit_continuity_is_a_penalty_not_a_hard_filter(
+    river_banks_network, config
+) -> None:
+    """A real route change (or an outage long enough that the car could be
+    anywhere) must still be reachable, just less preferred: a fix squarely on
+    the disconnected bank still lands there, it is just not exclusive."""
+    net = river_banks_network
+    bank_a = edge_named(net, "Bank A", (0.0, 0.0))
+    bank_b = edge_named(net, "Bank B", (20.0, 0.0))
+    pf = make_filter(net, config, n=2000)
+
+    pf.initialize(
+        (20.0, 50.0), heading=math.pi / 2, speed=0.0,
+        position_sigma=5.0, previous_edges=[bank_a],
+    )
+    on_a = int(np.sum(pf.edge_idx == bank_a))
+    on_b = int(np.sum(pf.edge_idx == bank_b))
+    assert on_b > 0.9 * (on_a + on_b), "geometry must still dominate a clear-cut fix"
+    assert on_a > 0, "the penalised bank must remain reachable, not impossible"
+
+
+def test_reinitialize_passes_the_current_cloud_as_previous_edges(
+    river_banks_network, config
+) -> None:
+    net = river_banks_network
+    bank_a = edge_named(net, "Bank A", (0.0, 0.0))
+    bank_b = edge_named(net, "Bank B", (20.0, 0.0))
+    pf = make_filter(net, config, n=2000)
+    pf.initialize((0.0, 50.0), heading=math.pi / 2, speed=10.0, position_sigma=5.0)
+    # A tiny floor probability (see `initialize`'s `max(score, 1e-6)`) means an
+    # occasional particle on the far bank is expected, not a bug.
+    assert int(np.sum(pf.edge_idx == bank_a)) > 0.99 * len(pf.edge_idx)
+
+    pf.reinitialize((10.0, 50.0), heading=math.pi / 2, speed=10.0, sigma=10.0)
+    on_a = int(np.sum(pf.edge_idx == bank_a))
+    on_b = int(np.sum(pf.edge_idx == bank_b))
+    assert on_a > on_b, "reinitialize must carry the pre-divergence cloud forward as continuity"

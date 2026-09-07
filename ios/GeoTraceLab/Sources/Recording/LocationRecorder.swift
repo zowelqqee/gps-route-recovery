@@ -61,9 +61,15 @@ public final class LocationRecorder: NSObject, ObservableObject {
         acceptedCount = 0
         rejectedCount = 0
         latest = nil
-        if authorization == .whenInUse || authorization == .always {
+        // `allowsBackgroundLocationUpdates` only does anything under Always
+        // authorization - CoreLocation silently ignores it under When In Use,
+        // so setting it there just makes the app *believe* a locked-screen
+        // drive keeps recording when in fact the whole process (motion
+        // included, since it rides on this same background session) will be
+        // suspended the moment the screen locks or the app backgrounds.
+        if authorization == .always {
             manager.allowsBackgroundLocationUpdates = true
-            manager.showsBackgroundLocationIndicator = authorization != .always
+            manager.showsBackgroundLocationIndicator = false
         }
         manager.startUpdatingLocation()
         manager.startUpdatingHeading()

@@ -234,7 +234,9 @@ def _run_tracking_pipeline(
         cfg.motion,
         initial_state=[origin_xy[0], origin_xy[1], speed0, heading0, bias_a, bias_w],
     )
-    monitor = GPSQualityMonitor(cfg.gps, max_accel_ms2=cfg.motion.max_accel_ms2)
+    monitor = GPSQualityMonitor(
+        cfg.gps, max_accel_ms2=cfg.motion.max_accel_ms2, max_speed_ms=cfg.motion.max_speed_ms
+    )
     pf: Optional[RoadParticleFilter] = None
     if algorithm == "road_particle_filter":
         pf = RoadTracker(network, cfg, rng=make_rng(cfg.seed, cfg.rng_mode))
@@ -250,6 +252,7 @@ def _run_tracking_pipeline(
     gps_states: list[dict[str, Any]] = []
     last_known_xy = origin_xy
     last_trusted_t = trip.t0
+    last_known_sigma_m = cfg.gps.recovery_position_sigma_m
     accepted_points: list[dict[str, Any]] = []
     rejected_points: list[dict[str, Any]] = []
 
@@ -269,11 +272,34 @@ def _run_tracking_pipeline(
 
     for control in controls:
         t = control.t
+        # GPS trust is deliberately evaluated before the road filter advances.
+        #
+        # `has_gps_corroboration` gates two independent decisions below, both
+        # for the same reason: a quiet, low-acceleration IMU signal is
+        # identical for "stopped" and "cruising at a steady speed", so
+        # without GPS to tell them apart the filter should neither commit to
+        # zero (ZUPT) nor let a residual accelerometer bias slowly integrate
+        # the speed towards zero on its own (the predict deadband). Once
+        # trust has been lost after having been established, that
+        # corroboration is gone until it returns. The opening calibration
+        # stop is unaffected: `bootstrap_done` is false there too, but for
+        # the opposite reason - nothing has been lost yet, so it is not a
+        # real outage. See `GPSQualityMonitor.bootstrap_done`.
+        monitor.note_gap(t)
+        has_gps_corroboration = monitor.is_trusted or not monitor.bootstrap_done
+        deadband = not has_gps_corroboration
+        # A post-shock mount slip only matters while nothing else can catch
+        # it. With GPS corroborating, a bad heading is corrected within one
+        # fix cycle anyway, and most shocks are ordinary bumps hit while
+        # tracking is otherwise fine (potholes, speed bumps) - discounting
+        # their yaw rate there only throws away real steering signal and
+        # makes GPS look like it disagrees with a now-lagging prediction.
+        yaw_trust = control.yaw_trust if deadband else 1.0
         if control.is_shock:
             # The phone may have moved independently of the car. Preserve the
             # vehicle's existing constant-velocity prediction, but do not turn
             # the impact into acceleration/yaw and make its uncertainty honest.
-            ekf.predict((0.0, 0.0, 0.0), 0.0, control.dt)
+            ekf.predict((0.0, 0.0, 0.0), 0.0, control.dt, deadband=deadband)
             ekf.inflate_for_mount_disturbance(
                 cfg.motion.shock_position_noise_mpsqrt,
                 cfg.motion.shock_heading_noise_radsqrt,
@@ -305,15 +331,22 @@ def _run_tracking_pipeline(
                 active_shock["end_s"] = round(t - trip.t0, 2)
                 shock_events.append(active_shock)
                 active_shock = None
-            ekf.predict(control.a_world, control.yaw_rate, control.dt)
-        # A quiet IMU only means a stop if we also believe we are barely
-        # moving; otherwise it just means steady cruising.
-        #
-        # GPS trust is deliberately evaluated before the road filter advances.
-        if not control.is_shock and control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
+            ekf.predict(
+                control.a_world,
+                control.yaw_rate,
+                control.dt,
+                deadband=deadband,
+                yaw_trust=yaw_trust,
+            )
+
+        if (
+            not control.is_shock
+            and control.is_quiet
+            and ekf.speed <= cfg.motion.zupt_max_speed_ms
+            and has_gps_corroboration
+        ):
             ekf.zero_velocity_update()
 
-        monitor.note_gap(t)
         if pf is not None and pf.initialized:
             # The particle cloud keeps moving through the road graph during an
             # outage, but is never reweighted by absent or rejected GPS.  It is
@@ -322,8 +355,15 @@ def _run_tracking_pipeline(
                 (0.0, 0.0, 0.0) if control.is_shock else control.a_world,
                 0.0 if control.is_shock else control.yaw_rate,
                 control.dt,
+                deadband=deadband,
+                yaw_trust=yaw_trust,
             )
-            if not control.is_shock and control.is_quiet and ekf.speed <= cfg.motion.zupt_max_speed_ms:
+            if (
+                not control.is_shock
+                and control.is_quiet
+                and ekf.speed <= cfg.motion.zupt_max_speed_ms
+                and has_gps_corroboration
+            ):
                 pf.zero_velocity_update(cfg.motion.zupt_max_speed_ms)
 
         while fix_cursor < len(fixes) and fixes[fix_cursor].monotonic_time <= t:
@@ -378,7 +418,13 @@ def _run_tracking_pipeline(
             }
             if result.accepted:
                 accepted_points.append(record)
-                if restored and _had_real_outage(monitor):
+                # A hard reanchor commits to this fix outright, bypassing the
+                # Kalman gain entirely - sound only when the fix itself is
+                # trustworthy. A recovering fix with a poor accuracy is the
+                # receiver admitting it does not know where the car is; that
+                # is folded in through the ordinary gain-weighted update below
+                # instead, where a large sigma earns it only a small nudge.
+                if restored and _had_real_outage(monitor) and sigma <= cfg.gps.max_reanchor_sigma_m:
                     ekf.reanchor(
                         xy,
                         sigma,
@@ -418,6 +464,7 @@ def _run_tracking_pipeline(
                         ekf.update_heading(course_to_heading(float(fix.course or 0.0)), math.radians(25.0))
                     last_known_xy = xy
                     last_trusted_t = fix.monotonic_time
+                    last_known_sigma_m = sigma
                     if pf is not None:
                         if not pf.initialized:
                             pf.initialize(
@@ -485,11 +532,42 @@ def _run_tracking_pipeline(
                 )
                 displayed_xy = ekf.position
                 if monitor.state is GPSState.TRUSTED:
-                    # A trusted observation has just constrained the particle
-                    # cloud, so its road corridors are an honest uncertainty
-                    # visualisation.
-                    uncertainty.append(unc)
+                    road_distance_m = (
+                        network.distance_to_road(last_known_xy) if network is not None else None
+                    )
+                    if road_distance_m is not None and road_distance_m > cfg.polygon.off_road_distance_m:
+                        # Trusted GPS, but nowhere near any edge the graph
+                        # knows about - a courtyard, a private drive, a gap
+                        # in coverage. The particle cloud is still forced
+                        # onto whichever real edge is nearest, which can be
+                        # hundreds of metres away; reporting its corridor as
+                        # 95%-confident would be a claim the GPS fix itself
+                        # contradicts. Fall back to an honest disc around the
+                        # real position instead.
+                        uncertainty.append(
+                            _circular_uncertainty(
+                                t, last_known_xy, ekf, cfg, monitor.state.value,
+                                since_trusted, "gps_off_road",
+                                gps_sigma_m=last_known_sigma_m,
+                            )
+                        )
+                    else:
+                        # A trusted observation has just constrained the
+                        # particle cloud, so its road corridors are an honest
+                        # uncertainty visualisation.
+                        uncertainty.append(unc)
                 else:
+                    # Position and heading are corrected independently here.
+                    # A compact, confident branch is required below before
+                    # position may be nudged at all - a real interchange with
+                    # several plausible streets fails that outright. Heading
+                    # is a weaker claim: those same streets can still all run
+                    # the same way away from the fork, so this can correct
+                    # heading even when no single branch is trusted enough to
+                    # correct position (see Config.pf.outage_heading_assist_*).
+                    heading_nudge = _outage_heading_assist(pf, ekf, cfg)
+                    if heading_nudge is not None:
+                        ekf.nudge_heading(heading_nudge, cfg.pf.outage_heading_assist_gain)
                     assist = _outage_map_assist(network, pf, unc, ekf.position, cfg)
                     if assist is not None:
                         displayed_xy, map_xy, probability, spread = assist
@@ -711,6 +789,41 @@ def _synthetic_controls(fixes: Sequence[LocationSample], cfg: Config) -> list[An
     return [ImuControl(t=t0 + dt * (i + 1), dt=dt, a_long=0.0, yaw_rate=0.0) for i in range(steps)]
 
 
+def _outage_heading_assist(
+    pf: RoadParticleFilter, ekf: ExtendedKalmanFilter, cfg: Config
+) -> Optional[float]:
+    """Bearing to nudge the EKF's heading towards, or None.
+
+    Independent of `_outage_map_assist`: that one requires one compact,
+    confident branch before it will touch position at all, which a real
+    interchange with several plausible streets fails outright. Heading is a
+    weaker claim - several genuinely different streets can still all run the
+    same way away from the fork - so `RoadParticleFilter.heading_consensus`
+    can answer it even when no single branch is trusted enough to correct
+    position.
+
+    That consensus is gated by two independent checks. Agreement within the
+    particle cloud (`resultant`) is not by itself evidence the cloud is
+    right: it is a causal, never retrospectively corrected prior, and after
+    long enough without GPS it can be confidently wrong (confirmed against
+    trip-b4faeae0-a941-4a87-9b18-de7aaa84f721: a 373 s outage after which one
+    confidently-agreeing but wrong branch cost 134 GPS fixes once trust
+    returned). Requiring the consensus to already be close to the EKF's own
+    independent heading (`heading_gap`) keeps this to a fine correction of a
+    small, plausible drift, never a wholesale redirection.
+    """
+    consensus = pf.heading_consensus()
+    if consensus is None:
+        return None
+    bearing, resultant = consensus
+    if resultant < cfg.pf.outage_heading_assist_min_resultant:
+        return None
+    heading_gap = abs(wrap_angle(bearing - ekf.heading))
+    if heading_gap > cfg.pf.outage_heading_assist_max_gap_rad:
+        return None
+    return bearing
+
+
 def _outage_map_assist(
     network: RoadNetwork,
     pf: RoadParticleFilter,
@@ -760,12 +873,17 @@ def _circular_uncertainty(
     state: str,
     since_trusted: float,
     algorithm: str,
+    gps_sigma_m: Optional[float] = None,
 ) -> UncertaintySet:
     """IMU-only uncertainty: an explicitly non-map-constrained disc.
 
     During a GPS outage there is no observation that can justify choosing a
     graph branch.  The disc deliberately says less than a road corridor, but
     it is honest about what the inertial state alone can support.
+
+    ``algorithm == "gps_off_road"`` is the one caller with a *trusted* fix:
+    the car is somewhere the road graph has no edge for, and ``gps_sigma_m``
+    is that fix's own measurement sigma, not an outage-growth guess.
     """
     import shapely
     from shapely.geometry import Point
@@ -776,6 +894,11 @@ def _circular_uncertainty(
         radius = min(
             max(cfg.polygon.r_min_m, 2.0 * math.sqrt(max(1e-6, ekf.P[0, 0] + ekf.P[1, 1]))),
             2000.0,
+        )
+    elif algorithm == "gps_off_road":
+        radius = min(
+            cfg.polygon.r_min_m + cfg.polygon.k_sigma * max(0.0, float(gps_sigma_m or 0.0)),
+            cfg.polygon.max_radius_m,
         )
     else:
         radius = min(

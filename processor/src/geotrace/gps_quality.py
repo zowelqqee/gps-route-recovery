@@ -71,11 +71,35 @@ class GateResult:
 
 
 def physical_gate(
-    distance_m: float, dt: float, previous_speed: float, cfg: GPSQualityConfig, max_accel: float
+    distance_m: float,
+    dt: float,
+    previous_speed: float,
+    cfg: GPSQualityConfig,
+    max_accel: float,
+    max_speed: float = math.inf,
 ) -> tuple[bool, float]:
-    """d_max = v*dt + 0.5*a_max*dt^2 + m; the fix is an outlier when d > d_max."""
+    """Kinematic reachability: accelerate at `max_accel` until `max_speed`,
+    then cruise. The fix is an outlier when the reported distance exceeds
+    what that envelope could have covered in `dt`.
+
+    Plain `v*dt + 0.5*a_max*dt^2` (no speed cap) is only sound for a `dt` of
+    a few seconds. Past that it implies the car kept accelerating at
+    `max_accel` the whole time - after a few minutes that is hundreds of
+    m/s, so the gate stops rejecting anything at all exactly when a long
+    outage makes it matter most. Capping the reachable speed keeps the gate
+    meaningful no matter how long the fix has been out of contact.
+    """
     dt = max(dt, 0.0)
-    d_max = previous_speed * dt + 0.5 * max_accel * dt * dt + cfg.physical_margin_m
+    if math.isfinite(max_speed) and previous_speed < max_speed and max_accel > 0:
+        t_to_cap = (max_speed - previous_speed) / max_accel
+        if dt <= t_to_cap:
+            d_max = previous_speed * dt + 0.5 * max_accel * dt * dt
+        else:
+            d_accel = previous_speed * t_to_cap + 0.5 * max_accel * t_to_cap * t_to_cap
+            d_max = d_accel + max_speed * (dt - t_to_cap)
+    else:
+        d_max = previous_speed * dt + 0.5 * max_accel * dt * dt
+    d_max += cfg.physical_margin_m
     return distance_m <= d_max, d_max
 
 
@@ -111,9 +135,12 @@ def measurement_sigma(sample: LocationSample, cfg: GPSQualityConfig) -> float:
 class GPSQualityMonitor:
     """The TRUSTED / SUSPECT / LOST / RECOVERING state machine."""
 
-    def __init__(self, cfg: GPSQualityConfig, max_accel_ms2: float = 6.0) -> None:
+    def __init__(
+        self, cfg: GPSQualityConfig, max_accel_ms2: float = 6.0, max_speed_ms: float = 45.0
+    ) -> None:
         self.cfg = cfg
         self.max_accel = max_accel_ms2
+        self.max_speed = max_speed_ms
         self.state = GPSState.LOST
         """A trip starts with no established trust; the first consistent fixes
         promote it to TRUSTED."""
@@ -132,6 +159,20 @@ class GPSQualityMonitor:
     @property
     def is_trusted(self) -> bool:
         return self.state is GPSState.TRUSTED
+
+    @property
+    def bootstrap_done(self) -> bool:
+        """True once TRUSTED has been reached at least once this trip.
+
+        Distinguishes "no GPS yet, trip just started" (state is LOST but
+        nothing has been lost - there was never anything to lose) from a real
+        outage (state is LOST again after having been TRUSTED). Callers that
+        need corroborating GPS evidence before trusting an IMU-only signal -
+        ZUPT is the case that matters - should require it, or the opening
+        calibration stop would be indistinguishable from a mid-trip GPS
+        dropout that merely looks quiet.
+        """
+        return self._bootstrap_done
 
     def note_gap(self, now: float) -> bool:
         """Call on every filter step. Returns True if a dropout pushed us to LOST."""
@@ -195,7 +236,7 @@ class GPSQualityMonitor:
             speed = predicted_speed
             if self.last_accepted.has_valid_speed:
                 speed = max(speed, float(self.last_accepted.speed or 0.0))
-            passed, d_max = physical_gate(distance, dt, speed, cfg, self.max_accel)
+            passed, d_max = physical_gate(distance, dt, speed, cfg, self.max_accel, self.max_speed)
             result.distance_m = distance
             result.max_distance_m = d_max
             if not passed:
@@ -203,8 +244,22 @@ class GPSQualityMonitor:
 
         # --- Innovation gate: GPS is a position measurement; the IMU is the
         # prediction. This test is intentionally independent of the road graph.
-        # When IMU-only tracking has lasted a while, its uncertainty is included
-        # in S rather than disabling the test or declaring a GPS point invalid.
+        #
+        # It only gates acceptance while `tracking`. Once real trust is lost,
+        # the "prediction" is unaided dead reckoning with no ceiling on how far
+        # it can wander - heading drift alone can walk it kilometres from the
+        # truth over a long outage. Gating a recovering fix against that
+        # prediction, even with its uncertainty inflated, means a real,
+        # accurate, self-consistent GPS stream can be rejected forever simply
+        # because our own belief drifted off in a different direction - the
+        # confirmed failure on a real trip where GPS never wavered (median 3 m
+        # accuracy) but the filter's dead-reckoned position diverged for 18
+        # minutes. The physical gate above (now bounded by max_speed, not an
+        # ever-growing envelope) and `_fix_to_fix_reasons` below are the right
+        # ground truth for a recovery candidate instead: physical reachability
+        # from the last position we actually trusted, and consistency with the
+        # fixes immediately around it - neither depends on our own drifted
+        # prediction being right.
         tracking = self.state in (GPSState.TRUSTED, GPSState.SUSPECT)
 
         if predicted_xy is not None and covariance is not None:
@@ -214,15 +269,16 @@ class GPSQualityMonitor:
                 since = 0.0 if self._untrusted_since is None else max(
                     0.0, sample.monotonic_time - self._untrusted_since
                 )
-                drift_sigma = (
+                drift_sigma = min(
                     cfg.recovery_position_sigma_m
-                    + cfg.recovery_position_sigma_growth_mps * since
+                    + cfg.recovery_position_sigma_growth_mps * since,
+                    cfg.recovery_position_sigma_cap_m,
                 )
                 P_xy += np.eye(2) * (drift_sigma**2)
             S = P_xy + np.eye(2) * (sigma**2)
             passed, d2 = mahalanobis_gate(residual, S, cfg.mahalanobis_threshold)
             result.mahalanobis = d2
-            if not passed:
+            if tracking and not passed:
                 reasons.append("mahalanobis_gate")
 
         if tracking:

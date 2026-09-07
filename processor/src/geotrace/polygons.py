@@ -302,8 +302,16 @@ def convex_hull_area(points: np.ndarray) -> float:
 
 
 def uncertainty_to_geojson(
-    sets: Sequence[UncertaintySet], frame: LocalFrame
+    sets: Sequence[UncertaintySet], frame: LocalFrame, t0: float = 0.0
 ) -> dict[str, Any]:
+    """``t0`` converts each set's raw monotonic ``t`` to trip-relative seconds
+    for the exported ``"t"`` property. `UncertaintySet.t` itself stays raw
+    internally (`coverage_and_area`/`branch_accuracy` match it against
+    reference timestamps on the same raw basis), so this file - the one
+    artefact that exposes it to a human or another tool - is where the
+    conversion belongs; every other diagnostic in this codebase already
+    reports trip-relative seconds, and a raw monotonic value here reads as an
+    unrelated, much later moment in the trip."""
     features = []
     for item in sets:
         for component in item.components:
@@ -311,7 +319,7 @@ def uncertainty_to_geojson(
                 component.to_geojson_feature(
                     frame,
                     extra={
-                        "t": round(item.t, 3),
+                        "t": round(item.t - t0, 3),
                         "confidence": item.confidence,
                         "gps_state": item.gps_state,
                     },

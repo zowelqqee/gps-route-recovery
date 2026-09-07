@@ -59,6 +59,43 @@ def test_physical_gate_allows_more_after_a_longer_gap() -> None:
     assert physical_gate(900.0, dt=60.0, previous_speed=14.0, cfg=CFG, max_accel=MAX_ACCEL)[0]
 
 
+def test_physical_gate_without_a_speed_cap_reaches_absurd_distances() -> None:
+    """The bug this exists to document: plain a_max*dt^2/2, unbounded, implies
+    hundreds of m/s after a few minutes - a real frozen fix in Saint
+    Petersburg cleared an 11 km displacement this way in about a minute."""
+    passed, d_max = physical_gate(11_000.0, dt=60.0, previous_speed=15.0, cfg=CFG, max_accel=MAX_ACCEL)
+    assert passed
+    assert d_max > 10_000.0  # implies an average speed over 150 m/s
+
+
+def test_physical_gate_with_a_speed_cap_stays_physically_sane() -> None:
+    """Same case, with the car's real top speed supplied: same 11 km jump in
+    60 s now correctly fails, because no passenger car reaches it that fast."""
+    passed, d_max = physical_gate(
+        11_000.0, dt=60.0, previous_speed=15.0, cfg=CFG, max_accel=MAX_ACCEL, max_speed=45.0
+    )
+    assert not passed
+    assert d_max < 3_500.0  # accelerate to 45 m/s, then cruise, over 60 s
+
+
+def test_physical_gate_with_a_speed_cap_eventually_allows_a_long_real_drive() -> None:
+    """The cap does not become a wall: give it enough time at a realistic top
+    speed and a genuinely distant fix is still reachable."""
+    dt = 11_000.0 / 45.0 + 10.0  # comfortably past the time needed at max_speed
+    passed, _ = physical_gate(
+        11_000.0, dt=dt, previous_speed=15.0, cfg=CFG, max_accel=MAX_ACCEL, max_speed=45.0
+    )
+    assert passed
+
+
+def test_physical_gate_speed_cap_matches_uncapped_below_the_cap() -> None:
+    """Short dt, low implied speed: the cap must not change anything close
+    to what the classic formula already gave the right answer for."""
+    capped = physical_gate(12.0, dt=1.0, previous_speed=10.0, cfg=CFG, max_accel=MAX_ACCEL, max_speed=45.0)
+    uncapped = physical_gate(12.0, dt=1.0, previous_speed=10.0, cfg=CFG, max_accel=MAX_ACCEL)
+    assert capped == uncapped
+
+
 def test_physical_gate_margin_is_configurable() -> None:
     tight = GPSQualityConfig(physical_margin_m=1.0)
     assert not physical_gate(30.0, dt=1.0, previous_speed=1.0, cfg=tight, max_accel=MAX_ACCEL)[0]
@@ -164,6 +201,26 @@ def test_suspect_to_lost_after_repeated_bad_fixes() -> None:
     assert monitor.state is GPSState.LOST
 
 
+def test_bootstrap_done_is_false_before_the_first_trust() -> None:
+    """The opening LOST (nothing has been trusted yet) is not a real outage."""
+    monitor = GPSQualityMonitor(CFG)
+    assert monitor.bootstrap_done is False
+    monitor.update(fix(0.0), (0.0, 0.0), predicted_speed=10.0)
+    assert monitor.bootstrap_done is False  # one good fix is not yet TRUSTED
+
+
+def test_bootstrap_done_stays_true_through_a_later_real_outage() -> None:
+    """Once trust has been earned, losing it again is a real outage - unlike
+    the opening bootstrap, which never had trust to lose."""
+    monitor = GPSQualityMonitor(CFG)
+    t = _promote_to_trusted(monitor)
+    assert monitor.bootstrap_done is True
+    monitor.note_gap(t + CFG.lost_gap_s + 1.0)
+    assert monitor.state is GPSState.LOST
+    assert monitor.bootstrap_done is True
+    assert monitor.is_trusted is False
+
+
 def test_dropout_moves_to_lost() -> None:
     """No fix at all for longer than lost_gap_s is itself a failure."""
     monitor = GPSQualityMonitor(CFG)
@@ -237,6 +294,53 @@ def test_a_continuous_fix_outside_graph_coverage_is_not_rejected() -> None:
     )
     assert result.accepted
     assert result.road_distance_m == pytest.approx(off_graph_distance_m)
+
+
+def test_recovery_accepts_a_consistent_accurate_fix_stream_despite_a_wrong_prediction() -> None:
+    """The real failure this fixes: on a real trip GPS stayed accurate and
+    self-consistent throughout (median 3 m accuracy), but the filter's own
+    dead-reckoned prediction had drifted kilometres away during an 18-minute
+    outage - and every good fix was rejected forever because it disagreed
+    with that drifted prediction, not because anything was wrong with it."""
+    monitor = GPSQualityMonitor(CFG, max_accel_ms2=MAX_ACCEL, max_speed_ms=45.0)
+    t = _promote_to_trusted(monitor)
+    last_x = 10.0 * (CFG.recover_count - 1)
+    monitor.note_gap(t + CFG.lost_gap_s + 1.0)
+    assert monitor.state is GPSState.LOST
+
+    # A confident prediction, badly wrong: kilometres off, wrong direction.
+    wrong_prediction = (last_x - 5_000.0, 3_000.0)
+    covariance = np.eye(6) * 25.0
+    tt = t + CFG.lost_gap_s + 1.0
+    for i in range(1, CFG.recover_count + 1):
+        tt += 1.0
+        x = last_x + 10.0 * i  # the same steady eastward drive continuing
+        result = monitor.update(
+            fix(tt), (x, 0.0), predicted_speed=10.0,
+            predicted_xy=wrong_prediction, covariance=covariance,
+        )
+        assert result.accepted, result.reasons
+        assert "mahalanobis_gate" not in result.reasons
+    assert monitor.state is GPSState.TRUSTED
+
+
+def test_recovery_still_rejects_an_unreachable_jump_without_needing_the_prediction() -> None:
+    """The physical gate - not agreement with our own prediction - is what
+    must still catch an implausible recovery candidate. Even a "perfect"
+    (but wrong) prediction must not bless a physically unreachable fix."""
+    monitor = GPSQualityMonitor(CFG, max_accel_ms2=MAX_ACCEL, max_speed_ms=45.0)
+    t = _promote_to_trusted(monitor)
+    last_x = 10.0 * (CFG.recover_count - 1)
+    monitor.note_gap(t + CFG.lost_gap_s + 1.0)
+    result = monitor.update(
+        fix(t + CFG.lost_gap_s + 2.0),
+        (last_x + 50_000.0, 0.0),
+        predicted_speed=10.0,
+        predicted_xy=(last_x + 50_000.0, 0.0),  # matches the fix exactly
+        covariance=np.eye(6) * 1.0,
+    )
+    assert not result.accepted
+    assert "physical_gate" in result.reasons
 
 
 def test_far_road_fix_can_recover_when_ekf_innovation_is_plausible() -> None:

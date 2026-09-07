@@ -154,6 +154,29 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             }
+            // Recording rides on CoreLocation's background session to stay
+            // alive with the screen locked - both GPS and motion silently
+            // stop the moment the app is suspended without it. "While Using"
+            // is enough to start a trip, so this must not block that, but a
+            // driver who leaves it unfixed will lose the middle of a long
+            // drive without any indication until they look at the result.
+            if !recorder.needsLocationPermission && recorder.needsBackgroundPermission {
+                HStack(spacing: 8) {
+                    Label(
+                        "Only \"While Using\" access is granted: recording stops if the screen locks or the app leaves the foreground.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    Spacer(minLength: 8)
+                    Button("Allow Always") {
+                        recorder.requestBackgroundPermission()
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

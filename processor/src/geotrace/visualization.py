@@ -44,6 +44,17 @@ COLOR_PARKING = "#d01c8b"
 
 MAX_EMBEDDED_PHOTO_BYTES = 1_800_000
 
+_PARKING_MARKER_STYLE = {
+    # A flag reads as "the vehicle is here, confidently"; a question mark
+    # reads as "the tracker is guessing". `ParkingTracker.run` already grades
+    # its own answer (see `parking_tracker.py`) - the map must not flatten
+    # that grade into one identical-looking pin for every status.
+    "CONFIDENT": {"icon_color": "pink", "icon": "flag", "dash": None, "fill_opacity": 0.14, "line_opacity": 0.9},
+    "PROBABLE": {"icon_color": "lightred", "icon": "flag", "dash": None, "fill_opacity": 0.11, "line_opacity": 0.75},
+    "UNCERTAIN": {"icon_color": "gray", "icon": "question-sign", "dash": "6,10", "fill_opacity": 0.08, "line_opacity": 0.55},
+    "INSUFFICIENT_DATA": {"icon_color": "lightgray", "icon": "question-sign", "dash": "6,10", "fill_opacity": 0.05, "line_opacity": 0.35},
+}
+
 
 @dataclass
 class ReportInputs:
@@ -157,17 +168,40 @@ def build_map(inputs: ReportInputs) -> folium.Map:
 
     parking = result.parking_result
     if parking is not None:
-        group = folium.FeatureGroup(name="ParkingTracker trajectory and endpoint", show=True).add_to(fmap)
+        # A pin and a solid flag read as "the car parked here" regardless of
+        # what status/confidence says underneath - which is exactly what
+        # misled a reader into thinking the system had confidently decided
+        # the trip ended here, when the data actually says INSUFFICIENT_DATA.
+        # The marker style must carry that distinction, not just the tooltip.
+        style = _PARKING_MARKER_STYLE.get(parking.status, _PARKING_MARKER_STYLE["UNCERTAIN"])
+        low_confidence = parking.status in ("UNCERTAIN", "INSUFFICIENT_DATA")
+        group_name = "ParkingTracker trajectory and endpoint"
+        if low_confidence:
+            group_name += " (low confidence)"
+        group = folium.FeatureGroup(name=group_name, show=True).add_to(fmap)
         if parking.trajectory:
             parking_geo = _latlon_list(frame.to_geo_array(np.asarray(parking.trajectory)))
-            folium.PolyLine(parking_geo, color=COLOR_PARKING, weight=4, opacity=0.9,
-                            tooltip="ParkingTracker trajectory").add_to(group)
+            folium.PolyLine(
+                parking_geo, color=COLOR_PARKING, weight=4, opacity=style["line_opacity"],
+                dash_array=style["dash"],
+                tooltip="ParkingTracker trajectory" + (" (low confidence)" if low_confidence else ""),
+            ).add_to(group)
             bounds.extend(parking_geo)
         plat, plon = frame.to_geo(*parking.position)
-        folium.Circle([plat, plon], parking.polygon_radius_m, color=COLOR_PARKING,
-                      fill=True, fill_opacity=0.12, tooltip=f"Parking confidence: {parking.status}").add_to(group)
-        folium.Marker([plat, plon], tooltip=f"ParkingTracker endpoint: {parking.status}",
-                      icon=folium.Icon(color="pink", icon="flag")).add_to(group)
+        circle_tooltip = f"Parking confidence: {parking.status} ({parking.confidence:.2f})"
+        marker_tooltip = f"ParkingTracker endpoint: {parking.status}"
+        if low_confidence:
+            circle_tooltip += f" - {parking.reason}"
+            marker_tooltip += f" - not a confident parking location ({parking.reason})"
+        folium.Circle(
+            [plat, plon], parking.polygon_radius_m, color=COLOR_PARKING,
+            dash_array=style["dash"], fill=True, fill_opacity=style["fill_opacity"],
+            tooltip=circle_tooltip,
+        ).add_to(group)
+        folium.Marker(
+            [plat, plon], tooltip=marker_tooltip,
+            icon=folium.Icon(color=style["icon_color"], icon=style["icon"]),
+        ).add_to(group)
 
     rejected = result.diagnostics.get("rejected_fixes", [])
     if rejected:

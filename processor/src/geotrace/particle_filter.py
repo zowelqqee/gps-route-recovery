@@ -143,6 +143,7 @@ class RoadParticleFilter:
         self.psi = np.zeros(n, dtype=float)
         self.b_a = np.zeros(n, dtype=float)
         self.b_w = np.zeros(n, dtype=float)
+        self._restriction_history: list[tuple[int, ...]] = [() for _ in range(n)]
         self.w = np.full(n, 1.0 / n, dtype=float)
         self.map_likelihood = np.ones(n, dtype=float)
         """L_map: carries the dead-end penalty from prediction into the update."""
@@ -164,6 +165,31 @@ class RoadParticleFilter:
 
     # ---------------------------------------------------------------- setup
 
+    def _reachable_edges(self, start_edges: Sequence[int], max_hops: int) -> set[int]:
+        """Every edge reachable from `start_edges` within `max_hops` hops.
+
+        Ignores turn restrictions and U-turns on purpose: this is a coarse
+        "is this street even connected to where the car already was" check
+        for re-seeding, not a route the car must actually be allowed to
+        drive - a restriction narrows which of several connected streets is
+        legal, it does not make an otherwise-nearby street physically
+        unreachable.
+        """
+        reached = {int(e) for e in start_edges}
+        frontier = set(reached)
+        for _ in range(max_hops):
+            nxt: set[int] = set()
+            for edge in frontier:
+                for successor in self.successors[edge]:
+                    s = int(successor)
+                    if s not in reached:
+                        nxt.add(s)
+            if not nxt:
+                break
+            reached |= nxt
+            frontier = nxt
+        return reached
+
     def initialize(
         self,
         xy: Sequence[float],
@@ -172,12 +198,23 @@ class RoadParticleFilter:
         accel_bias: float = 0.0,
         gyro_bias: float = 0.0,
         position_sigma: Optional[float] = None,
+        previous_edges: Optional[Sequence[int]] = None,
     ) -> None:
         """Seed the cloud around the last trusted fix.
 
         Particles are spread over the several nearest drivable edges, not just
         the closest one: at 15 m accuracy the nearest edge is often the wrong
         side of a dual carriageway.
+
+        `previous_edges`, when given, is where the cloud was before this
+        (re)seed. A candidate reachable from it within
+        `pf.reinit_route_continuity_hops` graph hops scores normally; every
+        other candidate is scored down by `pf.reinit_disconnected_penalty`.
+        Pure geometric nearest-edge search cannot otherwise tell "the street
+        the car was already on" from "some other street that happens to be
+        just as close" - the failure mode on parallel embankments either side
+        of a narrow river, where the wrong bank keeps winning the geometric
+        tie and the cloud never finds its way back.
         """
         n = self.pf.n_particles
         radius = position_sigma if position_sigma is not None else self.pf.init_radius_m
@@ -189,6 +226,11 @@ class RoadParticleFilter:
                 f"no drivable road within reach of {xy}; the cached graph does "
                 "not cover this trip"
             )
+        reachable = (
+            self._reachable_edges(previous_edges, self.pf.reinit_route_continuity_hops)
+            if previous_edges
+            else None
+        )
 
         # Prefer edges that both lie close to the fix and point the right way.
         scores = []
@@ -200,7 +242,11 @@ class RoadParticleFilter:
                 / (2 * self.pf.sigma_heading_rad**2)
             )
             proximity = math.exp(-(offset**2) / (2 * max(radius, 5.0) ** 2))
-            scores.append(max(align * proximity, 1e-6))
+            continuity = (
+                1.0 if reachable is None or index in reachable
+                else self.pf.reinit_disconnected_penalty
+            )
+            scores.append(max(align * proximity * continuity, 1e-6))
         scores_arr = np.array(scores) / np.sum(scores)
         counts = self.rng.multinomial(n, scores_arr)
 
@@ -220,6 +266,8 @@ class RoadParticleFilter:
             self.psi[sl] = wrap_angle(
                 bearing + self.rng.normal(0.0, self.pf.sigma_heading_rad * 0.5, count)
             )
+            for slot in range(cursor, cursor + count):
+                self._restriction_history[slot] = (int(index),)
             cursor += count
         self.v[:] = np.clip(
             speed + self.rng.normal(0.0, max(0.5, speed * 0.15), n), 0.0, self.motion.max_speed_ms
@@ -241,8 +289,27 @@ class RoadParticleFilter:
 
     # ------------------------------------------------------------- predict
 
-    def predict(self, a_world: Sequence[float], yaw_rate: float, dt: float) -> None:
-        """One motion step for every particle."""
+    def predict(
+        self,
+        a_world: Sequence[float],
+        yaw_rate: float,
+        dt: float,
+        deadband: bool = False,
+        yaw_trust: float = 1.0,
+    ) -> None:
+        """One motion step for every particle.
+
+        ``deadband`` coasts particles at their current speed instead of
+        integrating an acceleration too small to tell apart from residual
+        accelerometer bias (see ``MotionConfig.accel_deadband_ms2``). Leave
+        it off whenever GPS can corroborate the estimate.
+
+        ``yaw_trust`` discounts the measured yaw rate for a while after a
+        shock (see ``MotionConfig.shock_heading_recovery_s``): the gyro then
+        measures a real rotation, but possibly of the phone in its mount
+        rather than the car. ``psi`` still drives junction-choice scoring in
+        ``_cross_junctions``, so a corrupted psi can bias which branch the
+        cloud prefers even though particle positions stay on the graph."""
         if dt <= 0 or not self._initialized:
             return
         if dt > self.motion.max_gap_s:
@@ -257,10 +324,22 @@ class RoadParticleFilter:
         n = len(self.s)
         a_world = np.asarray(a_world, dtype=float)
 
-        # Longitudinal projection, per particle: a_par = aE cos(psi) + aN sin(psi)
-        a_long = a_world[0] * np.cos(self.psi) + a_world[1] * np.sin(self.psi)
+        # The graph is the kinematic constraint: IMU acceleration can only move
+        # a particle along the tangent of its current directed edge.  ``psi``
+        # remains the gyro/course hypothesis used to score junction choices;
+        # it must not be used to move the particle off the road geometry.
+        road_bearing = self.road_bearings()
+        a_long = a_world[0] * np.cos(road_bearing) + a_world[1] * np.sin(road_bearing)
         a_hat = np.clip(a_long - self.b_a, -self.motion.max_accel_ms2, self.motion.max_accel_ms2)
-        w_hat = yaw_rate - self.b_w
+        if deadband:
+            # Below the deadband, a_hat is indistinguishable from residual
+            # accelerometer bias rather than a real manoeuvre (see
+            # MotionConfig.accel_deadband_ms2); coast at the current speed
+            # instead of integrating noise. The threshold is always well
+            # under max_accel_ms2, so this can never mask a genuinely
+            # saturated value.
+            a_hat = np.where(np.abs(a_hat) < self.motion.accel_deadband_ms2, 0.0, a_hat)
+        w_hat = (yaw_rate - self.b_w) * yaw_trust
 
         scale = math.sqrt(dt / max(self.motion.filter_dt_s, 1e-6))
         eps_psi = rng.normal(0.0, self.pf.sigma_psi_rad * scale, n)
@@ -302,7 +381,14 @@ class RoadParticleFilter:
             current = int(self.edge_idx[i])
             remainder = float(self.s[i] - self._lengths[current])
             allow_uturn = self.pf.allow_uturn and float(self.v[i]) <= self.pf.uturn_max_speed_ms
-            options = self.successors_uturn[current] if allow_uturn else self.successors[current]
+            options = np.asarray(
+                self.net.allowed_successors(
+                    current,
+                    self._restriction_history[i],
+                    allow_uturn=allow_uturn,
+                ),
+                dtype=np.int64,
+            )
             if options.size == 0:
                 # Dead end: the car cannot be here. Park the particle at the end
                 # of the edge and mark it so the weight update kills it.
@@ -329,6 +415,8 @@ class RoadParticleFilter:
 
             self.edge_idx[i] = choice
             self.s[i] = min(remainder, float(self._lengths[choice]))
+            history = self._restriction_history[i] + (choice,)
+            self._restriction_history[i] = history[-self.net.restriction_history_limit:]
             # Nudge the heading onto the new road; the gyro still drives the rest.
             new_bearing = float(self.net.edges[choice].start_bearing)
             self.psi[i] = wrap_angle(psi_i + gain * float(wrap_angle(new_bearing - psi_i)))
@@ -340,6 +428,32 @@ class RoadParticleFilter:
 
     def road_bearings(self) -> np.ndarray:
         return self.net.bearings_fast(self.edge_idx, self.s)
+
+    def heading_consensus(self) -> Optional[tuple[float, float]]:
+        """Particle-weighted circular mean of the *road's own* bearing under
+        each particle, and how concentrated it is (mean resultant length,
+        0..1: 1.0 is every particle's road pointing the same way, 0.0 is
+        uniformly scattered).
+
+        This is a different question from "which branch is most probable"
+        (see `UncertaintySet.best`, `_outage_map_assist`): it is answerable
+        even while the cloud is split across several genuinely different
+        streets, as long as those streets all currently run in roughly the
+        same direction - which they typically do away from a junction, since
+        a branch split only changes which direction *agreement* is possible
+        right at the fork itself. It is therefore usable to correct heading
+        during an outage in cases where position is too ambiguous to correct
+        (see `Config.pf.outage_heading_assist_min_resultant`)."""
+        if not self._initialized or self.w.sum() <= 0:
+            return None
+        bearings = self.road_bearings()
+        total = float(self.w.sum())
+        x = float(np.sum(self.w * np.cos(bearings))) / total
+        y = float(np.sum(self.w * np.sin(bearings))) / total
+        resultant = math.hypot(x, y)
+        if resultant < 1e-9:
+            return None
+        return math.atan2(y, x), resultant
 
     def update_weights(
         self,
@@ -449,6 +563,7 @@ class RoadParticleFilter:
             self.v[slot] = max(0.0, speed + self.rng.normal(0.0, 1.0))
             self.b_a[slot] = mean_bias_a + self.rng.normal(0.0, 0.05)
             self.b_w[slot] = mean_bias_w + self.rng.normal(0.0, 0.005)
+            self._restriction_history[slot] = (int(index),)
             self.w[slot] = float(np.median(self.w))
         self.w = normalize_weights(self.w)
         self.result.injected += count
@@ -459,9 +574,20 @@ class RoadParticleFilter:
         """Full re-seed after divergence, keeping the learned sensor biases."""
         mean_bias_a = float(np.average(self.b_a, weights=self.w))
         mean_bias_w = float(np.average(self.b_w, weights=self.w))
+        # Edges holding a real share of the belief, not every edge that a
+        # single floor-probability straggler happened to land on (see
+        # `initialize`'s `max(score, 1e-6)`) - those would otherwise dilute
+        # the continuity check into treating everywhere the cloud has ever
+        # touched as equally "where the car already was".
+        unique_edges, inverse = np.unique(self.edge_idx, return_inverse=True)
+        edge_weight = np.bincount(inverse, weights=self.w, minlength=len(unique_edges))
+        previous_edges = [
+            int(edge) for edge, weight in zip(unique_edges, edge_weight) if weight >= 0.01
+        ]
         self.initialize(
             xy, heading=heading, speed=speed,
             accel_bias=mean_bias_a, gyro_bias=mean_bias_w, position_sigma=sigma,
+            previous_edges=previous_edges,
         )
         self.result.reinitializations += 1
 
@@ -477,6 +603,7 @@ class RoadParticleFilter:
         self.psi = self.psi[picks].copy()
         self.b_a = self.b_a[picks].copy()
         self.b_w = self.b_w[picks].copy()
+        self._restriction_history = [self._restriction_history[int(i)] for i in picks]
         self.map_likelihood = self.map_likelihood[picks].copy()
         self.w = np.full(n, 1.0 / n)
         self.result.resample_count += 1

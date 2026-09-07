@@ -43,6 +43,32 @@ class MotionConfig:
     looks identical to a parked one. A zero-velocity update is therefore only
     applied when the filter's own speed estimate is also low."""
 
+    accel_deadband_ms2: float = 1.0
+    """Bias-compensated |a_hat| below this is treated as exactly zero.
+
+    Speed is only observable from acceleration through braking/accelerating
+    events - a car holding a constant speed produces zero true longitudinal
+    acceleration. Without a deadband, any leftover bias-compensated residual
+    is integrated on every step regardless of magnitude, and over a long
+    unaided outage even a small one steadily drags the speed estimate down
+    (the speed floor at zero then holds it there) even though the car never
+    slowed down. Below this bar the model instead coasts at its last known
+    speed; a real deliberate manoeuvre (braking, accelerating hard) is well
+    above it and is integrated exactly as before.
+
+    This is set well above plain sensor bias on purpose. A real recorded
+    outage (trip-b4faeae0) showed a confirmed-steady highway cruise produce a
+    sustained apparent deceleration for minutes right after GPS was lost,
+    still present (just slower) at 0.35 m/s^2 - too large to be residual
+    accelerometer bias alone. The likely compounding cause is heading
+    uncertainty: once GPS stops correcting course, drifting yaw leaks part of
+    a real lateral/curve acceleration onto the longitudinal axis, and that
+    projection error is not bounded by how good the accelerometer itself is.
+    1.0 clears the worst case observed so far with real margin, while staying
+    below what a deliberate driving manoeuvre registers - but it is an
+    empirical margin over one confirmed case, not a derived bound, and may
+    need to move again."""
+
     zupt_max_speed_ms: float = 1.5
     """Filter speed below which a quiet IMU may be treated as a real stop."""
 
@@ -72,6 +98,29 @@ class MotionConfig:
     """Extra uncertainty injected while a mount-disturbance hold is active.
     The state keeps constant velocity and heading, but is explicitly marked as
     less reliable until GPS or a stable IMU sequence can constrain it again."""
+
+    shock_heading_recovery_s: float = 5.0
+    """A shock hard enough to flag (see ``shock_accel_ms2``/``shock_gyro_rads``)
+    can leave the phone sitting at a new angle in its mount rather than
+    bouncing back - the gyro then keeps reporting a real rotation, just the
+    phone's relative to the car, not the car's relative to the road. That is
+    indistinguishable from a real, sustained turn using the gyro alone, so
+    for this long after the hold ends the yaw rate is discounted (see
+    ``shock_heading_gain``) rather than trusted outright, until GPS - which
+    resets heading directly - is available again.
+
+    Only 5 s, deliberately conservative: on a real trip with frequent bumps
+    (trip-b4faeae0-a941-4a87-9b18-de7aaa84f721, 28 shocks in 35 minutes) a
+    longer window keeps discounting real turns that happen to follow a bump
+    during an already-untrusted stretch, which cascades into far more GPS
+    fixes being rejected than it saves - confirmed by direct comparison
+    against real-trip GPS accept/reject counts, not just the one bridge
+    case this exists for."""
+
+    shock_heading_gain: float = 0.5
+    """Fraction of the measured yaw rate kept during shock_heading_recovery_s.
+    Not zero: a genuinely sharp turn right after a bump must still register,
+    only damped rather than taken at face value."""
 
     accel_bias_rw: float = 0.008
     """Random-walk sigma of the accelerometer bias, m/s^2 per sqrt(s).
@@ -145,6 +194,33 @@ class GPSQualityConfig:
     This is a conservative representation of uncalibrated IMU drift used only
     in the innovation gate. The EKF is re-anchored after consecutive coherent
     fixes restore trust.
+    """
+
+    recovery_position_sigma_cap_m: float = 250.0
+    """Ceiling on `recovery_position_sigma_m + growth_mps * since`.
+
+    Without a ceiling the innovation gate's tolerance grows without bound the
+    longer GPS stays untrusted, so after a long enough outage it will admit a
+    fix however far away it lands - a frozen or cell-tower-derived position is
+    not made more plausible by the clock running. The car cannot actually be
+    reached by dead reckoning past a few hundred metres of honest drift, so
+    the gate should not pretend otherwise.
+    """
+
+    max_reanchor_sigma_m: float = 100.0
+    """A recovering fix may only trigger the *hard* re-anchor (EKF state
+    overwrite plus particle-filter reinitialization) when its own measurement
+    sigma is at least this good.
+
+    `reanchor` intentionally skips the Kalman gain and commits to the fix
+    outright (see `ExtendedKalmanFilter.reanchor`), which is only sound when
+    the fix itself is trustworthy. A fix whose own reported accuracy is
+    hundreds or thousands of metres wide is not "GPS is back" - it is the
+    receiver admitting it does not know where the car is - and forcing it
+    through the hard reset discards a perfectly good dead-reckoning track for
+    a worse one. Below this bar the fix is still folded in, just through the
+    ordinary gain-weighted EKF/particle updates, where a large sigma
+    correctly earns it only a small nudge.
     """
 
     max_median_track_to_road_m: float = 25.0
@@ -248,6 +324,26 @@ class ParticleFilterConfig:
     """If the best particle's GPS likelihood falls below this while GPS is
     TRUSTED, the filter has diverged and is re-seeded from the fix."""
 
+    reinit_route_continuity_hops: int = 8
+    """When re-seeding after divergence, an edge reachable within this many
+    graph hops of where the cloud already was scores normally; every other
+    edge is scored down by `reinit_disconnected_penalty`.
+
+    Divergence's own candidate search is purely geometric (nearest edge to
+    the fix, weighted by heading), which has no way to prefer "the street the
+    car was already driving on" over "some other street that happens to be
+    just as close" - exactly the failure mode near parallel embankments either
+    side of a narrow river, where re-seeding can lock onto the wrong bank and
+    never recover, because every subsequent divergence check re-runs the same
+    geometry-only search and finds the same wrong edge again."""
+
+    reinit_disconnected_penalty: float = 0.15
+    """Score multiplier for a re-seed candidate that is not within
+    `reinit_route_continuity_hops` of the pre-divergence cloud. A penalty, not
+    a hard filter: a real route change (a U-turn, backtracking, a long enough
+    outage that the car could plausibly be anywhere) must still be reachable,
+    just less preferred than continuing on the connected road."""
+
     heading_snap_gain: float = 0.35
     """After a junction the particle heading is pulled towards the new edge
     bearing by this gain; the gyro still drives the rest."""
@@ -274,6 +370,47 @@ class ParticleFilterConfig:
     """Fraction of the validated map correction blended into the IMU estimate.
     The road graph is a soft prior, not an independent position measurement."""
 
+    outage_heading_assist_min_resultant: float = 0.9
+    """Position and heading are corrected independently during an outage.
+    `_outage_map_assist` above requires one compact, confident branch before
+    it will touch position at all - a real river-confluence interchange with
+    several plausible streets fails that outright. But *direction* is a much
+    weaker claim than *which branch*: several genuinely different streets can
+    still all run the same way away from the fork itself. `heading_consensus`
+    (see RoadParticleFilter) measures exactly that agreement as a mean
+    resultant length in [0, 1]; only this concentrated does the road's own
+    bearing correct the EKF's heading (see outage_heading_assist_gain),
+    regardless of whether position could be corrected at all.
+
+    0.9, not lower: confirmed empirically against
+    test_the_polygons_cover_the_true_position (the fork-junction scenario) -
+    a mid-range resultant (~0.8) shows up exactly while the cloud is still
+    genuinely deciding between two branches, and nudging heading then biases
+    that decision. Above 0.9 the cliff disappears; 0.9-0.95 score equally
+    well, so 0.9 is kept for more real-trip coverage."""
+
+    outage_heading_assist_max_gap_rad: float = 0.6
+    """~35 degrees. The consensus bearing must already be this close to the
+    EKF's own independent heading before it may nudge it at all - agreement
+    within the particle cloud is not evidence the cloud itself is right, only
+    that it agrees with itself; after a long enough outage it is a causal,
+    never retrospectively corrected prior, and can be confidently on the
+    wrong street entirely. This keeps the correction to a small, plausible
+    drift, never a wholesale redirection - confirmed necessary against
+    trip-b4faeae0-a941-4a87-9b18-de7aaa84f721 (a 373 s outage where, without
+    this gap check, a confidently-agreeing but wrong branch cost 134 GPS
+    fixes once trust returned)."""
+
+    outage_heading_assist_gain: float = 0.35
+    """Fraction of the gap to the road's own bearing closed per output tick
+    when outage_heading_assist_min_resultant is met. This only rotates the
+    EKF's heading mean directly (`EKF.nudge_heading`) - deliberately not an
+    ordinary Kalman update: `heading_consensus` carries no position
+    information of its own, so pulling position along via P's cross-terms
+    (as a real course measurement legitimately would) is not justified and
+    measurably hurts a genuinely undecided branch split (see
+    test_the_polygons_cover_the_true_position)."""
+
 
 
 @dataclass
@@ -293,6 +430,16 @@ class PolygonConfig:
     simplify_tolerance_m: float = 1.0
     min_component_probability: float = 0.01
     """Components below this are dropped from the output."""
+
+    off_road_distance_m: float = 60.0
+    """A trusted GPS fix farther than this from every known graph edge means
+    the car is somewhere the road graph has no edge for at all - a courtyard,
+    a private drive, a car park, a coverage gap - not a mismatch between two
+    nearby streets. The particle filter still snaps onto whichever real edge
+    happens to be nearest, which can be hundreds of metres away and is then
+    not a 95%-confident corridor but a guess the GPS itself contradicts. Past
+    this distance the output falls back to an honest GPS-accuracy disc around
+    the fix instead of that corridor."""
 
 
 @dataclass

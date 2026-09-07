@@ -199,10 +199,16 @@ public final class RoadTracker {
         let maxAccel = config.motion.maxAccelMS2
         let maxSpeed = config.motion.maxSpeedMS
         for index in 0..<n {
-            // Longitudinal projection, per particle:
-            // a_par = aE cos(psi) + aN sin(psi)
+            // The road graph is the kinematic constraint.  IMU acceleration
+            // may change speed along the current directed edge, but it must
+            // not move a particle according to a free heading away from the
+            // edge geometry.  Heading remains the gyro/course hypothesis used
+            // to score the next junction.
+            let roadBearing = network.bearing(edge: Int(cloud.edge[index]), s: cloud.s[index])
+            let roadCos = cos(roadBearing)
+            let roadSin = sin(roadBearing)
             let psi = cloud.heading[index]
-            let aLong = aWorld.x * cos(psi) + aWorld.y * sin(psi)
+            let aLong = aWorld.x * roadCos + aWorld.y * roadSin
             let aHat = Swift.min(Swift.max(aLong - cloud.accelBias[index], -maxAccel), maxAccel)
             let wHat = yawRate - cloud.gyroBias[index]
 

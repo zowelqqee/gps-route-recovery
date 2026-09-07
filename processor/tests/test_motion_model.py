@@ -214,6 +214,138 @@ def test_acceleration_is_clipped_to_a_physical_limit() -> None:
     assert out[IDX_V] == pytest.approx(CFG.max_accel_ms2)
 
 
+# --------------------------------------------------------------- deadband
+
+
+def test_deadband_is_off_by_default() -> None:
+    """A residual below the deadband still integrates unless asked not to."""
+    small = 0.5 * CFG.accel_deadband_ms2
+    out = propagate_state(state(v=10.0), small, 0.0, 1.0, CFG)
+    assert out[IDX_V] == pytest.approx(10.0 + small)
+
+
+def test_deadband_coasts_through_a_residual_below_the_threshold() -> None:
+    """Below the threshold, a_hat is indistinguishable from sensor bias, so
+    the model holds the current speed instead of drifting."""
+    small = 0.5 * CFG.accel_deadband_ms2
+    out = propagate_state(state(v=10.0), small, 0.0, 1.0, CFG, deadband=True)
+    assert out[IDX_V] == pytest.approx(10.0)
+    assert out[IDX_E] == pytest.approx(10.0)  # step uses the coasted v, not v + drift
+
+
+def test_deadband_does_not_mask_a_real_manoeuvre() -> None:
+    """A clearly-above-threshold acceleration is still a real signal."""
+    big = 2.0 * CFG.accel_deadband_ms2
+    out = propagate_state(state(v=10.0), big, 0.0, 1.0, CFG, deadband=True)
+    assert out[IDX_V] == pytest.approx(10.0 + big)
+
+
+def test_deadband_does_not_survive_many_minutes_of_residual_bias() -> None:
+    """The failure this exists to fix: on a real trip an unmodelled residual
+    this small, integrated for ~25 minutes, is enough to erase highway speed
+    entirely. With the deadband active it must not move the speed at all."""
+    residual = 0.6 * CFG.accel_deadband_ms2
+    x = state(v=20.0)
+    for _ in range(15000):  # 1500 s at dt=0.1, roughly this trip's real outage
+        x = propagate_state(x, residual, 0.0, 0.1, CFG, deadband=True)
+    assert x[IDX_V] == pytest.approx(20.0)
+
+
+@pytest.mark.parametrize(
+    "x,a,w,dt",
+    [
+        (state(v=10.0, ba=0.05), 0.05, 0.0, 0.1),  # a_hat inside the deadband
+        (state(v=8.0, ba=-0.02, bw=0.01), 2.5, 0.15, 0.1),  # a_hat well above it
+    ],
+)
+def test_analytic_jacobian_matches_finite_differences_with_deadband(x, a, w, dt) -> None:
+    analytic = transition_jacobian(x, a, w, dt, CFG, deadband=True)
+    numeric = np.zeros((STATE_DIM, STATE_DIM))
+    h = 1e-6
+    for i in range(STATE_DIM):
+        up, down = x.copy(), x.copy()
+        up[i] += h
+        down[i] -= h
+        numeric[:, i] = (
+            propagate_state(up, a, w, dt, CFG, deadband=True)
+            - propagate_state(down, a, w, dt, CFG, deadband=True)
+        ) / (2 * h)
+    assert np.abs(analytic - numeric).max() < 1e-6
+
+
+# ------------------------------------------------------- shock heading trust
+
+
+def test_yaw_trust_is_full_by_default() -> None:
+    out = propagate_state(state(psi=0.0), 0.0, 1.0, 1.0, CFG)
+    assert out[IDX_PSI] == pytest.approx(1.0)
+
+
+def test_yaw_trust_discounts_the_measured_yaw_rate() -> None:
+    """A shock can leave the phone at a new angle in its mount; the gyro then
+    measures that real rotation, but possibly of the phone, not the car."""
+    out = propagate_state(state(psi=0.0), 0.0, 1.0, 1.0, CFG, yaw_trust=0.3)
+    assert out[IDX_PSI] == pytest.approx(0.3)
+
+
+def test_yaw_trust_does_not_fully_suppress_a_genuine_manoeuvre() -> None:
+    """Damped, not silenced: part of a real turn right after a bump must
+    still register rather than being thrown away entirely."""
+    out = propagate_state(state(psi=0.0), 0.0, 2.0, 1.0, CFG, yaw_trust=0.3)
+    assert out[IDX_PSI] == pytest.approx(0.6)
+    assert out[IDX_PSI] != pytest.approx(0.0)
+
+
+def test_build_imu_stream_discounts_yaw_right_after_a_shock_then_recovers() -> None:
+    """The failure this exists to fix: a shock (see shock_accel_ms2) can leave
+    the phone sitting at a new angle rather than bouncing back. Right after
+    the shock's own hold ends, yaw must be discounted; once
+    shock_heading_recovery_s has elapsed it must be trusted again."""
+    cfg = MotionConfig(shock_hold_s=0.2, shock_heading_recovery_s=1.0, shock_heading_gain=0.3)
+    dt = cfg.filter_dt_s
+    samples = []
+    t = 0.0
+    for _ in range(10):
+        samples.append(MotionSample(monotonic_time=t))
+        t += dt
+    samples.append(MotionSample(monotonic_time=t, user_acceleration_g=(2.0, 0.0, 0.0)))
+    t += dt
+    for _ in range(40):
+        samples.append(MotionSample(monotonic_time=t))
+        t += dt
+    controls = build_imu_stream(samples, cfg).controls
+
+    shock_indices = [i for i, c in enumerate(controls) if c.is_shock]
+    assert shock_indices, "the injected acceleration must have been flagged as a shock"
+    last_shock = shock_indices[-1]
+
+    assert not controls[last_shock + 1].is_shock
+    assert controls[last_shock + 1].yaw_trust == pytest.approx(cfg.shock_heading_gain)
+    assert controls[-1].yaw_trust == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "x,a,w,dt,yaw_trust",
+    [
+        (state(v=10.0, bw=0.02), 0.5, 0.3, 0.1, 0.3),
+        (state(v=8.0, psi=0.4, bw=-0.01), 1.2, 1.5, 0.1, 0.0),
+    ],
+)
+def test_analytic_jacobian_matches_finite_differences_with_yaw_trust(x, a, w, dt, yaw_trust) -> None:
+    analytic = transition_jacobian(x, a, w, dt, CFG, yaw_trust=yaw_trust)
+    numeric = np.zeros((STATE_DIM, STATE_DIM))
+    h = 1e-6
+    for i in range(STATE_DIM):
+        up, down = x.copy(), x.copy()
+        up[i] += h
+        down[i] -= h
+        numeric[:, i] = (
+            propagate_state(up, a, w, dt, CFG, yaw_trust=yaw_trust)
+            - propagate_state(down, a, w, dt, CFG, yaw_trust=yaw_trust)
+        ) / (2 * h)
+    assert np.abs(analytic - numeric).max() < 1e-6
+
+
 # ------------------------------------------------------------- the gap guard
 
 

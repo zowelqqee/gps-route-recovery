@@ -12,6 +12,7 @@ node, and which edges are near a point.
 
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -43,6 +44,261 @@ EdgeId = tuple[Any, Any, int]
 
 class RoadGraphError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class TurnRestriction:
+    """A directed OSM turn restriction.
+
+    ``from_edge`` and ``to_edge`` are directed edge ids.  ``via_edges`` is
+    empty for the common one-junction case and contains the directed via-way
+    edges for a multi-way restriction.  The graph loader intentionally keeps
+    this small, explicit representation: the particle filter only needs to
+    answer whether a candidate successor completes a forbidden/only sequence.
+    """
+
+    kind: str
+    from_edge: EdgeId
+    to_edge: EdgeId
+    via_edges: tuple[EdgeId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"no", "only"}:
+            raise ValueError("turn restriction kind must be 'no' or 'only'")
+
+
+def _restriction_kind(tags: dict[str, Any]) -> Optional[str]:
+    """`no_left_turn` / `only_straight_on` / ... -> `"no"` / `"only"`.
+
+    A vehicle-specific key (``restriction:motorcar`` etc.) takes precedence
+    over the generic ``restriction`` key when both are present, since this
+    system only ever tracks a car.
+    """
+    value = (
+        tags.get("restriction:motorcar")
+        or tags.get("restriction:motor_vehicle")
+        or tags.get("restriction")
+    )
+    if not value:
+        return None
+    value = str(value).strip().lower()
+    if value.startswith("no_"):
+        return "no"
+    if value.startswith("only_"):
+        return "only"
+    return None
+
+
+def _restriction_applies_to_cars(tags: dict[str, Any]) -> bool:
+    """An `except=motorcar` (or `motor_vehicle`) tag exempts the vehicle we
+    track; `except=psv`/`bicycle`/etc. does not."""
+    excepted = str(tags.get("except", "")).lower()
+    return not any(token in excepted for token in ("motorcar", "motor_vehicle"))
+
+
+def _edges_by_osmid(graph: nx.MultiDiGraph) -> dict[int, list["EdgeId"]]:
+    """OSM way id -> every directed graph edge built from that way.
+
+    OSMnx's simplification can merge several ways into one edge (``osmid``
+    becomes a list) or leave one long way split across several edges at real
+    junctions, so this is a one-to-many index in both directions.
+    """
+    index: dict[int, list[EdgeId]] = {}
+    for u, v, k, data in graph.edges(keys=True, data=True):
+        osmid = data.get("osmid")
+        ids = osmid if isinstance(osmid, (list, tuple)) else [osmid]
+        for way_id in ids:
+            if way_id is None:
+                continue
+            try:
+                way_id = int(way_id)
+            except (TypeError, ValueError):
+                continue
+            index.setdefault(way_id, []).append((u, v, k))
+    return index
+
+
+def _edge_ending_at(candidates: Sequence["EdgeId"], node: Any) -> Optional["EdgeId"]:
+    matches = [edge for edge in candidates if edge[1] == node]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _edge_starting_at(candidates: Sequence["EdgeId"], node: Any) -> Optional["EdgeId"]:
+    matches = [edge for edge in candidates if edge[0] == node]
+    return matches[0] if len(matches) == 1 else None
+
+
+def extract_turn_restrictions(
+    graph: nx.MultiDiGraph, relations: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Resolve raw OSM `type=restriction` relations against a graph's edges.
+
+    A relation's `from`/`via`/`to` members are OSM way/node ids, not this
+    graph's directed (u, v, k) edge ids, and a way id can map to several
+    edges (see `_edges_by_osmid`). A relation is dropped - never guessed -
+    whenever a member cannot be resolved to exactly one edge: that happens
+    routinely for a relation whose ways lie outside a clipped graph, and
+    guessing wrong here would forbid or force a turn that OSM never meant.
+
+    Returns plain JSON-safe dicts (not `TurnRestriction`) so the result can be
+    embedded in a GraphML cache and re-hydrated later without importing this
+    module's dataclass; `RoadNetwork._compile_turn_restrictions` accepts this
+    shape directly.
+    """
+    by_way = _edges_by_osmid(graph)
+    out: list[dict[str, Any]] = []
+    for relation in relations:
+        tags = relation.get("tags") or {}
+        if tags.get("type") != "restriction":
+            continue
+        kind = _restriction_kind(tags)
+        if kind is None or not _restriction_applies_to_cars(tags):
+            continue
+        members = relation.get("members") or []
+        from_ways = [m for m in members if m.get("role") == "from" and m.get("type") == "way"]
+        to_ways = [m for m in members if m.get("role") == "to" and m.get("type") == "way"]
+        via_members = [m for m in members if m.get("role") == "via"]
+        if len(from_ways) != 1 or len(to_ways) != 1 or not via_members:
+            continue
+        from_candidates = by_way.get(int(from_ways[0]["ref"]), [])
+        to_candidates = by_way.get(int(to_ways[0]["ref"]), [])
+        if not from_candidates or not to_candidates:
+            continue
+
+        from_edge: Optional[EdgeId] = None
+        to_edge: Optional[EdgeId] = None
+        via_edges: list[EdgeId] = []
+
+        if len(via_members) == 1 and via_members[0].get("type") == "node":
+            via_node = via_members[0]["ref"]
+            from_edge = _edge_ending_at(from_candidates, via_node)
+            to_edge = _edge_starting_at(to_candidates, via_node)
+        elif all(m.get("type") == "way" for m in via_members):
+            # A chained (multi-way) restriction: walk from-way -> via-ways ->
+            # to-way through shared nodes, trying each from-way candidate
+            # until one chain resolves end to end.
+            for candidate in from_candidates:
+                node = candidate[1]
+                chain: list[EdgeId] = []
+                for member in via_members:
+                    way_candidates = by_way.get(int(member["ref"]), [])
+                    edge = _edge_starting_at(way_candidates, node)
+                    if edge is None:
+                        chain = []
+                        break
+                    chain.append(edge)
+                    node = edge[1]
+                if not chain and via_members:
+                    continue
+                candidate_to_edge = _edge_starting_at(to_candidates, node)
+                if candidate_to_edge is None:
+                    continue
+                from_edge, via_edges, to_edge = candidate, chain, candidate_to_edge
+                break
+        else:
+            continue
+
+        if from_edge is None or to_edge is None:
+            continue
+        out.append(
+            {
+                "kind": kind,
+                "from_edge": list(from_edge),
+                "via_edges": [list(edge) for edge in via_edges],
+                "to_edge": list(to_edge),
+                "osm_relation_id": relation.get("id"),
+            }
+        )
+    return out
+
+
+_OVERPASS_ENDPOINTS = (
+    # The main instance's own wiki page (as of writing) warns it is
+    # "nowadays... overloaded - do not expect high reliability", and its
+    # round-robin DNS occasionally hands out a backend that drops the TLS
+    # handshake entirely rather than answering. Mirrors that publish "no
+    # rate limit" go first; the main instance stays as a last resort since
+    # it is still the most complete/current dataset when it does answer.
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+)
+
+_OVERPASS_USER_AGENT = "geotrace/0.1 (turn-restriction extraction for road-graph reconstruction)"
+"""Overpass's usage policy asks for a descriptive User-Agent identifying the
+app; some instances also reject the default `python-requests/x.x` string
+outright with an HTTP 406."""
+
+
+def fetch_turn_restrictions(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    timeout: Optional[float] = None,
+    endpoints: Optional[Sequence[str]] = None,
+) -> list[dict[str, Any]]:
+    """Every OSM `type=restriction` relation in a bounding box, via Overpass.
+
+    Tries each of `endpoints` (default `_OVERPASS_ENDPOINTS`) in turn and
+    returns the first successful response, rather than depending on one
+    fixed Overpass instance - see `_OVERPASS_ENDPOINTS` for why.
+
+    Raises `RoadGraphError` only once every endpoint has failed, so a caller
+    can choose to continue the graph download without turn restrictions
+    rather than fail the whole thing over one flaky mirror.
+    """
+    import requests
+
+    request_timeout = timeout if timeout is not None else 180.0
+    query = (
+        f"[out:json][timeout:{int(request_timeout)}];\n"
+        f'relation["type"="restriction"]({south},{west},{north},{east});\n'
+        "out body;"
+    )
+    urls = endpoints if endpoints is not None else _OVERPASS_ENDPOINTS
+    errors: list[str] = []
+    for url in urls:
+        try:
+            response = requests.post(
+                url,
+                data={"data": query},
+                timeout=request_timeout,
+                headers={"User-Agent": _OVERPASS_USER_AGENT},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # network error, timeout, bad JSON, HTTP error
+            errors.append(f"{url}: {exc}")
+            continue
+        return [el for el in payload.get("elements", []) if el.get("type") == "relation"]
+    raise RoadGraphError(
+        "turn-restriction query failed on every Overpass endpoint: " + "; ".join(errors)
+    )
+
+
+def _attach_turn_restrictions(graph: nx.MultiDiGraph) -> None:
+    """Fetch and embed turn restrictions for `graph`'s own bounding box.
+
+    Best-effort: a failed fetch leaves the graph without restrictions (as it
+    was before this feature existed) rather than aborting the download - a
+    car-sharing fleet still needs its map even when Overpass is briefly down.
+    """
+    lats = [data["y"] for _, data in graph.nodes(data=True) if "y" in data]
+    lons = [data["x"] for _, data in graph.nodes(data=True) if "x" in data]
+    if not lats or not lons:
+        return
+    try:
+        relations = fetch_turn_restrictions(min(lats), min(lons), max(lats), max(lons))
+        restrictions = extract_turn_restrictions(graph, relations)
+    except RoadGraphError as exc:
+        warnings.warn(
+            f"could not fetch turn restrictions ({exc}); continuing without them",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    graph.graph["turn_restrictions_json"] = json.dumps(restrictions)
 
 
 @dataclass
@@ -128,13 +384,28 @@ class RoadNetwork:
     """Per-edge offset used by the flattened fast index; larger than any
     conceivable single edge length."""
 
-    def __init__(self, graph: nx.MultiDiGraph, frame: LocalFrame) -> None:
+    def __init__(
+        self,
+        graph: nx.MultiDiGraph,
+        frame: LocalFrame,
+        turn_restrictions: Optional[Iterable[TurnRestriction]] = None,
+    ) -> None:
         self.graph = graph
         self.frame = frame
+        # OSM relations are not part of the basic edge geometry.  Callers may
+        # pass compiled restrictions explicitly; graph.graph is supported as a
+        # cache/serialization hook for loaders that already extracted them.
+        self._raw_turn_restrictions = list(
+            turn_restrictions
+            if turn_restrictions is not None
+            else graph.graph.get("turn_restrictions", ())
+        )
         self.edges: list[Edge] = []
         self.edge_index: dict[EdgeId, int] = {}
         self.node_xy: dict[Any, tuple[float, float]] = {}
         self.out_edges: dict[Any, list[int]] = {}
+        self.turn_restrictions: tuple[TurnRestriction, ...] = ()
+        self.restriction_history_limit = 1
         self._build()
 
     # ---------------------------------------------------------------- build
@@ -188,6 +459,17 @@ class RoadNetwork:
         if not self.edges:
             raise RoadGraphError("road graph contains no usable edges")
 
+        self.turn_restrictions = self._compile_turn_restrictions(
+            self._raw_turn_restrictions
+        )
+        if self.turn_restrictions:
+            self.restriction_history_limit = max(
+                len(r.via_edges) + 2 for r in self.turn_restrictions
+            )
+        self._restrictions_by_trigger_edge = self._index_turn_restrictions(
+            self.turn_restrictions
+        )
+
         self._lines = [e.line for e in self.edges]
         self._tree = STRtree(self._lines)
         self._build_fast_index()
@@ -196,6 +478,91 @@ class RoadNetwork:
             float(allx[:, 0].min()), float(allx[:, 1].min()),
             float(allx[:, 0].max()), float(allx[:, 1].max()),
         )
+
+    def _compile_turn_restrictions(
+        self, restrictions: Iterable[TurnRestriction]
+    ) -> tuple[TurnRestriction, ...]:
+        """Validate restrictions against the directed graph.
+
+        Unknown relations are ignored rather than inventing topology.  This is
+        important for GraphML files whose relation references were clipped or
+        whose edge keys were normalised by an external loader.
+        """
+        compiled: list[TurnRestriction] = []
+        for restriction in restrictions:
+            if not isinstance(restriction, TurnRestriction):
+                if isinstance(restriction, dict):
+                    restriction = TurnRestriction(
+                        kind=str(restriction["kind"]),
+                        from_edge=tuple(restriction["from_edge"]),
+                        to_edge=tuple(restriction["to_edge"]),
+                        via_edges=tuple(
+                            tuple(edge) for edge in restriction.get("via_edges", ())
+                        ),
+                    )
+                else:
+                    continue
+            edge_ids = (restriction.from_edge,) + restriction.via_edges + (restriction.to_edge,)
+            if all(edge_id in self.edge_index for edge_id in edge_ids):
+                compiled.append(restriction)
+        return tuple(compiled)
+
+    def _index_turn_restrictions(
+        self, restrictions: tuple[TurnRestriction, ...]
+    ) -> dict[int, list[tuple[tuple[int, ...], str, int]]]:
+        """Bucket restrictions by the edge whose crossing can trigger them.
+
+        A restriction can only ever match when ``history[-1]`` (the edge
+        being crossed) equals the last element of its required prefix - a
+        graph the size of a city can carry thousands of restrictions, and
+        `allowed_successors` is called for every particle at every junction,
+        so checking all of them on every call scales with city size instead
+        of with how many restrictions actually start at this junction.
+        """
+        index: dict[int, list[tuple[tuple[int, ...], str, int]]] = {}
+        for restriction in restrictions:
+            from_index = self.edge_index[restriction.from_edge]
+            via_indices = tuple(self.edge_index[e] for e in restriction.via_edges)
+            to_index = self.edge_index[restriction.to_edge]
+            required_prefix = (from_index,) + via_indices
+            index.setdefault(required_prefix[-1], []).append(
+                (required_prefix, restriction.kind, to_index)
+            )
+        return index
+
+    def allowed_successors(
+        self,
+        edge_index: int,
+        history: Sequence[int] = (),
+        allow_uturn: bool = False,
+    ) -> list[int]:
+        """Return successors allowed by direction, U-turn and turn relations.
+
+        ``history`` includes the current edge (``history[-1] == edge_index``).
+        A ``no`` relation removes a candidate that completes its edge
+        sequence. If one or more matching ``only`` relations exist, only
+        their union of ``to`` edges remains.
+        """
+        candidates = list(self.successors(edge_index, allow_uturn=allow_uturn))
+        relevant = self._restrictions_by_trigger_edge.get(edge_index)
+        if not relevant:
+            return candidates
+        prefix = tuple(history)
+        only_targets: set[int] = set()
+        has_only = False
+        forbidden: set[int] = set()
+        for required_prefix, kind, to_index in relevant:
+            if len(prefix) < len(required_prefix) or prefix[-len(required_prefix):] != required_prefix:
+                continue
+            if kind == "only":
+                has_only = True
+                only_targets.add(to_index)
+            if kind == "no":
+                forbidden.add(to_index)
+
+        if has_only:
+            candidates = [candidate for candidate in candidates if candidate in only_targets]
+        return [candidate for candidate in candidates if candidate not in forbidden]
 
     def _edge_coords(self, u: Any, v: Any, data: dict[str, Any]) -> Optional[np.ndarray]:
         geometry = data.get("geometry")
@@ -374,6 +741,7 @@ def download_graph(place: str, output: str | Path, network_type: str = "drive") 
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
     graph = ox.graph_from_place(place, network_type=network_type, simplify=True)
+    _attach_turn_restrictions(graph)
     ox.save_graphml(graph, out)
     return out
 
@@ -391,6 +759,7 @@ def download_graph_bbox(
         graph = ox.graph_from_bbox(bbox=(west, south, east, north), network_type=network_type)
     except TypeError:  # pragma: no cover - depends on the installed OSMnx
         graph = ox.graph_from_bbox(north, south, east, west, network_type=network_type)
+    _attach_turn_restrictions(graph)
     ox.save_graphml(graph, out)
     return out
 
@@ -417,6 +786,12 @@ def load_graph(path: str | Path) -> nx.MultiDiGraph:
                 for key in ("x", "y"):
                     if key in data:
                         data[key] = float(data[key])
+    raw_restrictions = graph.graph.get("turn_restrictions_json")
+    if raw_restrictions:
+        try:
+            graph.graph["turn_restrictions"] = json.loads(raw_restrictions)
+        except (json.JSONDecodeError, TypeError):
+            graph.graph["turn_restrictions"] = []
     return graph
 
 

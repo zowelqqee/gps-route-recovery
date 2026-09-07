@@ -103,6 +103,12 @@ class ImuControl:
     """A likely holder disturbance. The filters must not interpret its raw
     acceleration or rotation as a manoeuvre of the car."""
 
+    yaw_trust: float = 1.0
+    """Fraction of ``yaw_rate`` to trust once a shock's own hold has ended
+    (see ``MotionConfig.shock_heading_recovery_s``). A shock can leave the
+    phone at a new angle in its mount; the gyro then measures that real
+    rotation, but of the phone, not necessarily the car."""
+
     peak_accel_ms2: float = 0.0
     peak_gyro_rads: float = 0.0
 
@@ -195,10 +201,12 @@ def build_imu_stream(
 
     prev_time = t0
     shock_until = float("-inf")
+    heading_recovery_until = float("-inf")
     for step in range(n_steps):
         mask = bins == step
         t_end_step = float(edges[step + 1])
         if not np.any(mask):
+            is_shock_now = t_end_step <= shock_until
             stream.controls.append(
                 ImuControl(
                     t=t_end_step,
@@ -207,7 +215,12 @@ def build_imu_stream(
                     yaw_rate=0.0,
                     is_quiet=False,
                     gap_exceeded=(t_end_step - prev_time) > cfg.max_gap_s,
-                    is_shock=t_end_step <= shock_until,
+                    is_shock=is_shock_now,
+                    yaw_trust=(
+                        cfg.shock_heading_gain
+                        if not is_shock_now and t_end_step <= heading_recovery_until
+                        else 1.0
+                    ),
                 )
             )
             continue
@@ -219,6 +232,10 @@ def build_imu_stream(
         peak_gyro = float(np.max(gyro_norm[mask]))
         if np.any(shock_flags[mask]):
             shock_until = max(shock_until, t_end_step + cfg.shock_hold_s)
+            heading_recovery_until = max(
+                heading_recovery_until, shock_until + cfg.shock_heading_recovery_s
+            )
+        is_shock_now = t_end_step <= shock_until
         stream.controls.append(
             ImuControl(
                 t=t_end_step,
@@ -228,7 +245,12 @@ def build_imu_stream(
                 a_world=(float(mean_a[0]), float(mean_a[1]), float(mean_a[2])),
                 is_quiet=bool(np.all(quiet_flags[mask])),
                 gap_exceeded=gap > cfg.max_gap_s,
-                is_shock=t_end_step <= shock_until,
+                is_shock=is_shock_now,
+                yaw_trust=(
+                    cfg.shock_heading_gain
+                    if not is_shock_now and t_end_step <= heading_recovery_until
+                    else 1.0
+                ),
                 peak_accel_ms2=peak_accel,
                 peak_gyro_rads=peak_gyro,
             )
@@ -307,8 +329,42 @@ def _quiet_imu(
     return out
 
 
+def _bias_compensated_acceleration(
+    a_long: float, b_a: float, cfg: MotionConfig, deadband: bool = False
+) -> tuple[float, bool]:
+    """a_hat with the physical clip and, optionally, the noise deadband applied.
+
+    ``deadband`` defaults to off: the deadband trades away bias-learning
+    sensitivity (see below) for immunity to long-run drift, which is only a
+    good trade while GPS cannot corroborate either one. A caller with GPS
+    aiding available - the common case - should leave it off so bias
+    calibration keeps working exactly as before.
+
+    Returns ``(a_hat, neutralized)``. ``neutralized`` is True whenever a_hat's
+    value cannot be traced back to the raw input - either it saturated at the
+    physical clip boundary, or (only when ``deadband`` is set) it fell inside
+    the deadband and was forced to exactly zero (see
+    ``MotionConfig.accel_deadband_ms2``). Both cases need the same Jacobian
+    treatment: d(a_hat)/d(a_long) and d(a_hat)/d(b_a) are both zero, so
+    `transition_jacobian` must agree with whichever of the two reasons
+    applied here.
+    """
+    a_raw = a_long - b_a
+    saturated = abs(a_raw) >= cfg.max_accel_ms2
+    a_hat = float(np.clip(a_raw, -cfg.max_accel_ms2, cfg.max_accel_ms2))
+    if deadband and not saturated and abs(a_hat) < cfg.accel_deadband_ms2:
+        return 0.0, True
+    return a_hat, saturated
+
+
 def propagate_state(
-    state: np.ndarray, a_long: float, yaw_rate: float, dt: float, cfg: MotionConfig
+    state: np.ndarray,
+    a_long: float,
+    yaw_rate: float,
+    dt: float,
+    cfg: MotionConfig,
+    deadband: bool = False,
+    yaw_trust: float = 1.0,
 ) -> np.ndarray:
     """Exact transition from the specification.
 
@@ -319,7 +375,10 @@ def propagate_state(
         v_{t+1}   = max(0, v_t + a_hat dt)
 
     Biases are constant across a single step (random walk is applied in the
-    covariance, not in the mean).
+    covariance, not in the mean). ``deadband`` - see
+    `_bias_compensated_acceleration` - defaults to off. ``yaw_trust`` - see
+    `MotionConfig.shock_heading_recovery_s` - discounts the measured yaw rate
+    after a shock, defaulting to 1.0 (fully trusted).
     """
     if dt <= 0:
         return state.copy()
@@ -330,8 +389,8 @@ def propagate_state(
         )
 
     e, n, v, psi, b_a, b_w = state
-    a_hat = float(np.clip(a_long - b_a, -cfg.max_accel_ms2, cfg.max_accel_ms2))
-    w_hat = yaw_rate - b_w
+    a_hat, _ = _bias_compensated_acceleration(a_long, b_a, cfg, deadband)
+    w_hat = (yaw_rate - b_w) * yaw_trust
 
     psi_bar = psi + 0.5 * w_hat * dt
     step = v * dt + 0.5 * a_hat * dt * dt
@@ -346,25 +405,33 @@ def propagate_state(
 
 
 def transition_jacobian(
-    state: np.ndarray, a_long: float, yaw_rate: float, dt: float, cfg: MotionConfig
+    state: np.ndarray,
+    a_long: float,
+    yaw_rate: float,
+    dt: float,
+    cfg: MotionConfig,
+    deadband: bool = False,
+    yaw_trust: float = 1.0,
 ) -> np.ndarray:
-    """Analytic dF/dX of :func:`propagate_state`.
+    """Analytic dF/dX of :func:`propagate_state`. ``deadband`` and
+    ``yaw_trust`` must match the values passed to `propagate_state` for this
+    same step, or the two disagree on where a_hat/w_hat came from.
 
     Derived by hand; ``tests/test_ekf.py`` checks it against a central finite
     difference of ``propagate_state`` so the two can never drift apart.
     """
     _e, _n, v, psi, b_a, b_w = state
-    a_raw = a_long - b_a
-    saturated = abs(a_raw) >= cfg.max_accel_ms2
-    a_hat = float(np.clip(a_raw, -cfg.max_accel_ms2, cfg.max_accel_ms2))
-    w_hat = yaw_rate - b_w
+    a_hat, neutralized = _bias_compensated_acceleration(a_long, b_a, cfg, deadband)
+    w_hat = (yaw_rate - b_w) * yaw_trust
 
     psi_bar = psi + 0.5 * w_hat * dt
     cos_b, sin_b = math.cos(psi_bar), math.sin(psi_bar)
     step = v * dt + 0.5 * a_hat * dt * dt
-    # d(step)/d(b_a) is zero once the acceleration clips.
-    dstep_dba = 0.0 if saturated else -0.5 * dt * dt
-    dpsibar_dbw = -0.5 * dt
+    # d(step)/d(b_a) is zero once the acceleration clips or falls in the deadband.
+    dstep_dba = 0.0 if neutralized else -0.5 * dt * dt
+    # d(w_hat)/d(b_w) = -yaw_trust, so every derivative through w_hat picks up
+    # the same factor.
+    dpsibar_dbw = -0.5 * dt * yaw_trust
 
     F = np.eye(STATE_DIM)
     F[IDX_E, IDX_V] = dt * cos_b
@@ -384,9 +451,9 @@ def transition_jacobian(
         F[IDX_V, IDX_BA] = 0.0
     else:
         F[IDX_V, IDX_V] = 1.0
-        F[IDX_V, IDX_BA] = 0.0 if saturated else -dt
+        F[IDX_V, IDX_BA] = 0.0 if neutralized else -dt
 
-    F[IDX_PSI, IDX_BW] = -dt
+    F[IDX_PSI, IDX_BW] = -dt * yaw_trust
     return F
 
 
