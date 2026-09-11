@@ -355,13 +355,24 @@ class SinglePathManager(HypothesisManager):
             newly.append(turn)
         return newly
 
+    def _successors(self, edge: int, history: tuple[int, ...] = ()) -> list[int]:
+        """``geometry.successors`` with any manually blocked OSM node-pair
+        transitions removed - see
+        ``SinglePathConfig.blocked_successor_node_pairs``."""
+        raw = self.geometry.successors(edge, history)
+        blocked = self.single_cfg.blocked_successor_node_pairs
+        if not blocked:
+            return raw
+        edges = self.geometry.network.edges
+        return [e for e in raw if (edges[e].u, edges[e].v) not in blocked]
+
     def _junction_gap_deg(self, edge: int, tail: tuple[int, ...],
                           signed_angle: float) -> float:
         """Smallest ``||map turn| - |measured||`` over sign-compatible outgoing
         turns at the node at the end of ``edge`` - how well a junction here
         could explain the event. Large means no junction explanation."""
         best = 999.0
-        for nxt in self.geometry.successors(edge, tail or (edge,)):
+        for nxt in self._successors(edge, tail or (edge,)):
             jt = self.geometry.junction_turn(edge, nxt)
             if np.sign(jt) == np.sign(signed_angle) or abs(signed_angle) < math.radians(15.0):
                 best = min(best, abs(math.degrees(abs(jt)) - math.degrees(abs(signed_angle))))
@@ -448,7 +459,7 @@ class SinglePathManager(HypothesisManager):
         for _ in range(2):
             nxt_frontier: list[tuple[int, float, tuple[int, ...]]] = []
             for fe, fend, fh in frontier:
-                for s in self.geometry.successors(fe, fh or (fe,)):
+                for s in self._successors(fe, fh or (fe,)):
                     s = int(s)
                     chain.append((s, fend))
                     nxt_frontier.append(
@@ -534,7 +545,7 @@ class SinglePathManager(HypothesisManager):
                 if (turn.soft and res
                         > self.single_cfg.soft_turn_max_position_residual_m):
                     continue
-                succ = self.geometry.successors(
+                succ = self._successors(
                     d.incoming_edge,
                     d.parent_route.tail(self._restriction_depth))
                 if len(succ) < 2:
@@ -742,7 +753,7 @@ class SinglePathManager(HypothesisManager):
                                 distance: float, sigma_s: float, t: float,
                                 incoming_edge: int, route: Any
                                 ) -> Optional[TurnMatch]:
-        successors = self.geometry.successors(
+        successors = self._successors(
             incoming_edge, route.tail(self._restriction_depth))
         if not successors:
             return None
@@ -815,7 +826,7 @@ class SinglePathManager(HypothesisManager):
     def _commit(self, hs: HypothesisSet, distance: float, t: float) -> HypothesisSet:
         pending = self.pending
         assert pending is not None
-        successors = self.geometry.successors(
+        successors = self._successors(
             pending.incoming_edge,
             pending.parent_route.tail(self._restriction_depth))
         self.pending = None
@@ -904,11 +915,21 @@ class SinglePathManager(HypothesisManager):
                 history = pending.parent_route.tail(self._restriction_depth)
                 for i, edge_value in enumerate(successors):
                     edge = int(edge_value)
+                    direct_residual = float(np.abs(_wrap(np.array(
+                        [turns[i] - measured]))[0]))
+                    if direct_residual <= math.radians(
+                            self.single_cfg.compound_plan_max_residual_deg):
+                        # This successor's own single-hop angle already
+                        # explains the gyro measurement well. Trust it rather
+                        # than a lookahead through a further, unrelated edge -
+                        # otherwise a candidate that is a clean direct match
+                        # can lose to one that only matches two hops out.
+                        continue
                     if self.geometry.lengths[edge] > float(
                             self.single_cfg.compound_connector_max_m):
                         continue
                     edge_history = (history + (edge,))[-self._restriction_depth:]
-                    following = self.geometry.successors(edge, edge_history)
+                    following = self._successors(edge, edge_history)
                     if not following:
                         continue
                     # A terminal branch can appear angle-perfect only because
@@ -919,7 +940,7 @@ class SinglePathManager(HypothesisManager):
                     for nxt in following:
                         next_history = (edge_history + (int(nxt),))[
                             -self._restriction_depth:]
-                        if self.geometry.successors(int(nxt), next_history):
+                        if self._successors(int(nxt), next_history):
                             continuing.append(int(nxt))
                     if continuing:
                         following = continuing
@@ -931,6 +952,8 @@ class SinglePathManager(HypothesisManager):
                     ])
                     residuals = np.abs(_wrap(totals - measured))
                     j = int(np.argmin(residuals))
+                    if residuals[j] >= direct_residual:
+                        continue
                     effective_turns[i] = totals[j]
                     compound_next[i] = int(following[j])
             score_turns = (-effective_turns
@@ -1155,7 +1178,7 @@ class SinglePathManager(HypothesisManager):
                 return
             if depth >= max_depth:
                 return
-            for nxt in self.geometry.successors(edge, (prev, edge)):
+            for nxt in self._successors(edge, (prev, edge)):
                 jt = self.geometry.junction_turn(edge, nxt)
                 dz = float(_wrap(np.array([jt - observed[k]]))[0])
                 if abs(dz) <= match_tol and (np.sign(jt) == np.sign(observed[k])
@@ -1183,7 +1206,7 @@ class SinglePathManager(HypothesisManager):
                     d.provisional_outcome = "confirmed_by_late_turn"
                 continue
             later = [tn for tn in self.turns
-                     if tn.ingested and not tn.soft
+                     if tn.ingested and not tn.soft and not tn.consumed
                      and abs(tn.signed_angle) >= math.radians(cfg.event_min_angle_deg)
                      and tn.t_peak > d.t_cross
                      and t >= tn.t_end + cfg.event_settle_s]

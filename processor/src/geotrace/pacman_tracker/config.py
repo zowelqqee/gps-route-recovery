@@ -227,6 +227,26 @@ class SinglePathConfig:
     the marker forever. With unsigned IMU speed this is the only observable
     model of reversing out: distance keeps increasing while map position moves
     back along the same road. It is used only when no forward successor exists."""
+    blocked_successor_node_pairs: tuple[tuple[int, int], ...] = (
+        (12180325731, 12180325730),
+        (12180325770, 12180325748),
+        # Novgorodskaya ul. / Starorusskaya ul., St. Petersburg: two short
+        # (6.8 m, 8.8 m) one-/bi-directional Starorusskaya connectors, one
+        # node apart, both geometrically and angularly indistinguishable (by
+        # speed, road class or turn kinematics) from a genuine turn out of the
+        # one-way Novgorodskaya corridor - the same physical gyro event
+        # matches whichever of the two the tracker still reaches. Every real
+        # drive through here (2026-09-08 real_tests, RFID-confirmed) instead
+        # continues straight down the corridor (921->911->916->949).
+    )
+    """Manual exception list: OSM (u, v) node pairs - stable across graph
+    reloads, unlike internal edge indices - that single_path must never offer
+    as a successor, regardless of sensor evidence. Not a general heuristic:
+    every entry here is a confirmed-wrong junction from ground truth the
+    tracker cannot see in production (e.g. sparse RFID checkpoints), left as a
+    manually curated list because no sensor-only signal (speed, road class,
+    turn kinematics) distinguished it from a genuine turn - see
+    docs/SINGLE_PATH_FORENSICS.md and the 2026-09-08 real_tests review."""
 
     # Soft turn tier: gentle turns below the strong-event threshold.
     soft_turn_enabled: bool = True
