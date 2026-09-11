@@ -10,6 +10,7 @@ A configuration can be loaded from / dumped to JSON so a run is reproducible.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -44,30 +45,10 @@ class MotionConfig:
     applied when the filter's own speed estimate is also low."""
 
     accel_deadband_ms2: float = 1.0
-    """Bias-compensated |a_hat| below this is treated as exactly zero.
+    """Ignore bias-compensated acceleration below this threshold during an outage.
 
-    Speed is only observable from acceleration through braking/accelerating
-    events - a car holding a constant speed produces zero true longitudinal
-    acceleration. Without a deadband, any leftover bias-compensated residual
-    is integrated on every step regardless of magnitude, and over a long
-    unaided outage even a small one steadily drags the speed estimate down
-    (the speed floor at zero then holds it there) even though the car never
-    slowed down. Below this bar the model instead coasts at its last known
-    speed; a real deliberate manoeuvre (braking, accelerating hard) is well
-    above it and is integrated exactly as before.
-
-    This is set well above plain sensor bias on purpose. A real recorded
-    outage (trip-b4faeae0) showed a confirmed-steady highway cruise produce a
-    sustained apparent deceleration for minutes right after GPS was lost,
-    still present (just slower) at 0.35 m/s^2 - too large to be residual
-    accelerometer bias alone. The likely compounding cause is heading
-    uncertainty: once GPS stops correcting course, drifting yaw leaks part of
-    a real lateral/curve acceleration onto the longitudinal axis, and that
-    projection error is not bounded by how good the accelerometer itself is.
-    1.0 clears the worst case observed so far with real margin, while staying
-    below what a deliberate driving manoeuvre registers - but it is an
-    empirical margin over one confirmed case, not a derived bound, and may
-    need to move again."""
+    This is an empirical drift-control heuristic: gentle real acceleration and
+    braking can also fall below it. It does not make speed observable."""
 
     zupt_max_speed_ms: float = 1.5
     """Filter speed below which a quiet IMU may be treated as a real stop."""
@@ -75,6 +56,39 @@ class MotionConfig:
     zupt_gyro_rads: float = 0.03
     zupt_window_s: float = 1.0
     """How long the stillness condition must hold before a ZUPT is applied."""
+
+    zupt_vibration_g: float = 0.0
+    """Optional vibration threshold in g; zero disables it.
+
+    Quiet vibration can occur while cruising on smooth roads. This is only an
+    extra stillness cue, never independent proof that speed is zero."""
+
+    zupt_min_interval_s: float = 0.0
+    """Minimum time between ZUPTs; zero allows one per filter step.
+
+    Repeated updates from one quiet interval are correlated evidence. This
+    parameter is experimental and does not calibrate the reported uncertainty."""
+
+    zupt_requires_gps: bool = True
+    """Require a recent low-speed GPS observation for a zero-velocity update.
+
+    Disabling this is experimental: low estimated speed and quiet IMU can
+    reinforce an incorrect stopped hypothesis during a real cruise."""
+
+    leveling_recovery_tau_s: float = 0.0
+    """Leaky small-angle compensation for accelerometer-levelled AHRS attitude.
+
+    Zero disables it. This is an approximate inverse, not a general recovery
+    of missing acceleration: gyro bias and genuine tilt corrections also enter
+    the residual. Validate independently for each recorder and use case."""
+
+    accel_smooth_window_s: float = 0.0
+    """Centred boxcar duration in seconds; zero disables smoothing.
+
+    Applied to acceleration in the vehicle frame when mount calibration exists,
+    otherwise to the world vector. This is offline processing with future IMU
+    lookahead, not a zero-latency streaming filter. The 5 s / 2 m/s² combination
+    remains an experimental preset, not a validated universal default."""
 
     shock_accel_ms2: float = 9.0
     """Horizontal-or-vertical user acceleration above this is not a plausible
@@ -135,11 +149,28 @@ class MotionConfig:
 
     accel_noise: float = 0.35
     gyro_noise: float = 0.02
+    """Continuous white-noise densities, m/s²/sqrt(Hz) and rad/s/sqrt(Hz).
+    Their integrated variance grows with elapsed time, not sample count."""
 
     filter_dt_s: float = 0.1
     """The IMU stream (50 Hz on iPhone) is resampled to this step before it is
     fed to the filters. 10 Hz is plenty for vehicle dynamics and keeps the
     particle filter affordable."""
+
+    robust_window_s: float = 0.5
+    """Width of the local robust-normalisation window applied to raw IMU data.
+
+    Car controls change over tenths of seconds, while a loose phone or a
+    single CoreMotion frame can spike for one 20 ms sample.  The window is
+    deliberately short enough to retain braking and turns."""
+
+    robust_hampel_z: float = 4.5
+    """Local MAD threshold for replacing a single IMU outlier by its median."""
+
+    robust_accel_floor_ms2: float = 0.12
+    robust_yaw_floor_rads: float = 0.01
+    """Noise floors that prevent a nearly still sensor from treating ordinary
+    quantisation as an outlier."""
 
 
 @dataclass
@@ -344,9 +375,10 @@ class ParticleFilterConfig:
     outage that the car could plausibly be anywhere) must still be reachable,
     just less preferred than continuing on the connected road."""
 
-    heading_snap_gain: float = 0.35
-    """After a junction the particle heading is pulled towards the new edge
-    bearing by this gain; the gyro still drives the rest."""
+    heading_snap_gain: float = 0.0
+    """Legacy heuristic for pulling yaw onto a chosen road. Disabled because
+    it changes a hypothesis into apparent heading evidence without a valid
+    measurement/proposal correction. Road likelihood now selects headings."""
 
     outage_map_assist_min_probability: float = 0.85
     """Minimum posterior mass of one road hypothesis before the map may softly
@@ -411,6 +443,60 @@ class ParticleFilterConfig:
     measurably hurts a genuinely undecided branch split (see
     test_the_polygons_cover_the_true_position)."""
 
+    # ------------------------------------------- displayed route during an outage
+
+    display_route_constrained: bool = True
+    """Walk the displayed position along connected road edges while GPS is not
+    trusted (see `geotrace.display_route`), instead of drawing the free
+    inertial estimate, which is constrained by nothing and has been observed
+    leaving a bridge sideways into a river. Kill switch: turning this off
+    restores the previous behaviour exactly, without a revert."""
+
+    display_route_max_snap_m: float = 30.0
+    """How far the inertial estimate may be from the nearest edge and still be
+    snapped onto the graph when an outage begins. Half of
+    `PolygonConfig.off_road_distance_m`: a correctly-tracked car on a mapped
+    road sits within about ten metres of a centreline, and 30 m covers a wide
+    dual carriageway plus the residual error at the moment trust is lost,
+    while still excluding courtyards and unmapped drives. Refusing matters -
+    snapping an off-graph car locks the whole outage onto a street it was
+    never on."""
+
+    display_route_ekf_sigma_k: float = 1.0
+    """How far the road's answer may sit from the EKF's own position before it
+    is refused, in multiples of that filter's own position sigma
+    (`sqrt(P[E,E] + P[N,N])`, the idiom at `EKF.state_json`).
+
+    Deliberately scaled by the filter's admitted uncertainty rather than a
+    fixed distance: seconds into an outage sigma is metres, so the road has to
+    agree closely or it is not believed; minutes in, sigma is hundreds of
+    metres and the road wins by default - correct, because by then unaided
+    inertial position carries no information. Note the trace form already
+    carries a factor of about sqrt(2) over a per-axis sigma, so 1.0 here still
+    admits a centreline-versus-lane offset while refusing a parallel street.
+    This is the knob to move first if the walker proves too eager or too
+    stubborn."""
+
+    display_route_budget_margin_m: float = 25.0
+    """Slack on the per-tick "how far could the car have moved" budget that
+    bounds how far along the graph the display may walk. Equal to
+    `GPSQualityConfig.physical_margin_m`, this codebase's existing constant for
+    absorbing noise in a kinematic reachability bound. It also keeps the next
+    junction visible while the EKF is coasting under the acceleration deadband
+    and the per-tick distance is near zero."""
+
+    display_route_min_branch_mass: float = 0.05
+    """Below this share of particle weight the cloud has no useful opinion
+    about where the *display* is; the junction choice falls back to heading
+    alone and the along-track correction is skipped. Stops a handful of
+    stragglers from steering the drawn route."""
+
+    display_route_along_gain: float = 0.3
+    """Fraction of the gap to the cloud's along-edge position closed per output
+    tick. Same family as `outage_map_assist_gain` and
+    `outage_heading_assist_gain`, lower because this one fires every tick; a
+    gain rather than a snap avoids a visible per-tick jitter early in an
+    outage, when the sigma test still permits several metres of movement."""
 
 
 @dataclass
@@ -474,6 +560,43 @@ class PhotoConfig:
 
 
 @dataclass
+class RoadEKFConfig:
+    """Road-coordinate Gaussian mixture; dimensions are metres and seconds.
+
+    The corridor is a bounded display of hypotheses, not a coverage guarantee.
+    Noise parameters still require validation for each sensor installation.
+    """
+
+    max_hypotheses: int = 64
+    step_s: float = 0.5
+    cell_length_m: float = 60.0
+    corridor_half_width_m: float = 6.0
+    max_display_hypotheses: int = 5
+    tangent_span_m: float = 12.0
+    heading_sigma_rad: float = 0.12
+    road_heading_correlation_m: float = 30.0
+    accel_error_sigma_ms2: float = 0.3
+    accel_error_tau_s: float = 20.0
+    gyro_noise: float = 0.002
+    gyro_bias_walk: float = 0.000001
+    initial_gyro_bias_sigma: float = 0.00015
+
+    def __post_init__(self) -> None:
+        for name in ("max_hypotheses", "step_s", "cell_length_m",
+                     "corridor_half_width_m", "max_display_hypotheses",
+                     "tangent_span_m", "heading_sigma_rad", "road_heading_correlation_m",
+                     "accel_error_tau_s"):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+                raise ValueError(f"road_ekf.{name} must be positive")
+        for name in ("max_hypotheses", "max_display_hypotheses"):
+            if type(getattr(self, name)) is not int:
+                raise ValueError(f"road_ekf.{name} must be an integer")
+        for name in ("accel_error_sigma_ms2", "gyro_noise", "gyro_bias_walk", "initial_gyro_bias_sigma"):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
+                raise ValueError(f"road_ekf.{name} must be finite and nonnegative")
+
+
+@dataclass
 class Config:
     motion: MotionConfig = field(default_factory=MotionConfig)
     gps: GPSQualityConfig = field(default_factory=GPSQualityConfig)
@@ -482,7 +605,14 @@ class Config:
     parking: ParkingConfig = field(default_factory=ParkingConfig)
     parking_tracker: ParkingTrackerConfig = field(default_factory=ParkingTrackerConfig)
     photo: PhotoConfig = field(default_factory=PhotoConfig)
+    road_ekf: RoadEKFConfig = field(default_factory=RoadEKFConfig)
     seed: int = 42
+    gps_start_only: bool = False
+    """Use the first valid fix only to seed position, speed and heading.
+
+    The remaining route is then a strictly causal IMU + road-graph experiment;
+    no later GPS sample is allowed to correct or select its path.
+    """
 
     rng_mode: str = "numpy"
     """Which random generator the particle filter draws from.
@@ -515,8 +645,19 @@ class Config:
                     "parking": ParkingConfig,
                     "parking_tracker": ParkingTrackerConfig,
                     "photo": PhotoConfig,
+                    "road_ekf": RoadEKFConfig,
                 }.get(f.name)
-                kwargs[f.name] = sub(**value) if sub else value
+                # Reports must remain reproducible after a config field is
+                # retired.  Keep known values from an older saved run and
+                # silently use today's default for fields that no longer
+                # exist, rather than making the report impossible to open.
+                if sub:
+                    known = {item.name for item in fields(sub)}
+                    kwargs[f.name] = sub(
+                        **{key: item for key, item in value.items() if key in known}
+                    )
+                else:
+                    kwargs[f.name] = value
             else:
                 kwargs[f.name] = value
         return cls(**kwargs)

@@ -423,12 +423,12 @@ def test_while_lost_a_fix_is_checked_against_the_previous_fix_not_the_filter() -
     assert monitor.state is GPSState.LOST
 
     # First fix back: nothing to compare against yet, so it is taken on trust.
-    monitor.update(fix(201.0, speed=10.0, course=90.0), (0.0, 0.0), predicted_speed=10.0)
+    monitor.update(fix(201.0, speed=30.0, course=90.0), (0.0, 0.0), predicted_speed=30.0)
     assert monitor.state is GPSState.RECOVERING
 
-    # A fix claiming to drive east at 10 m/s that actually moved 10 m north.
+    # A fix claiming to drive east at 30 m/s that moved 30 m north (above GPS noise).
     result = monitor.update(
-        fix(202.0, speed=10.0, course=90.0), (0.0, 10.0), predicted_speed=10.0
+        fix(202.0, speed=30.0, course=90.0), (0.0, 30.0), predicted_speed=30.0
     )
     assert not result.accepted
     assert "course_inconsistent_with_previous_fix" in result.reasons

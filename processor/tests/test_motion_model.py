@@ -7,11 +7,13 @@ import math
 import numpy as np
 import pytest
 
-from geotrace.config import MotionConfig
+from geotrace.config import G_TO_MS2, MotionConfig
 from geotrace.coordinates import wrap_angle
-from geotrace.models import MotionSample
+from geotrace.models import MotionSample, MountCalibration
 from geotrace.motion_model import (
     IDX_BA,
+    build_imu_stream,
+    leveling_correction,
     IDX_BW,
     IDX_E,
     IDX_N,
@@ -91,6 +93,20 @@ def test_impact_marks_a_short_mount_disturbance_hold() -> None:
     assert stream.controls[0].is_shock
     assert stream.controls[0].peak_accel_ms2 == pytest.approx(10.0)
     assert stream.controls[1].is_shock
+
+
+def test_robust_normalisation_removes_a_single_nonshock_imu_spike() -> None:
+    """One bad 20 ms frame must not become a 100 ms vehicle manoeuvre."""
+    samples = [
+        MotionSample(
+            monotonic_time=0.02 * index,
+            user_acceleration_g=((5.0 if index == 2 else 0.2) / 9.80665, 0.0, 0.0),
+            rotation_rate=(0.0, 0.0, 0.0),
+        )
+        for index in range(5)
+    ]
+    stream = build_imu_stream(samples, MotionConfig(filter_dt_s=0.1, robust_window_s=0.1))
+    assert stream.controls[0].a_world[0] == pytest.approx(0.2, abs=0.01)
 
 
 # --------------------------------------------------------- state transition
@@ -458,3 +474,147 @@ def test_bias_estimation_without_a_stationary_period_returns_zero() -> None:
     from geotrace.motion_model import ImuStream
 
     assert estimate_initial_biases(ImuStream(), 0.0, CFG) == (0.0, 0.0)
+
+
+# --------------------------------------------------- AHRS levelling recovery
+
+
+def _levelling_ahrs_samples(
+    duration_s: float = 60.0,
+    rate_hz: float = 50.0,
+    accel_ms2: float = 1.0,
+    gain_per_s: float = 0.08,
+) -> tuple[list[MotionSample], float]:
+    """A recorder whose attitude filter leans into sustained acceleration.
+
+    The car drives straight and accelerates at a constant `accel_ms2`. The
+    attitude filter has no gyro rotation to explain, so it slowly tips its idea
+    of "down" toward the measured specific force. Gravity removal then cancels
+    part of the acceleration - the defect `leveling_correction` undoes.
+    """
+    n = int(duration_s * rate_hz)
+    dt = 1.0 / rate_hz
+    samples: list[MotionSample] = []
+    tilt = 0.0
+    for i in range(n):
+        # The filter chases the tilt that would explain the acceleration.
+        target = math.atan2(accel_ms2, G_TO_MS2)
+        tilt += gain_per_s * (target - tilt) * dt
+        # What survives gravity removal once the frame has tipped by `tilt`.
+        visible = accel_ms2 - G_TO_MS2 * math.sin(tilt)
+        half = tilt / 2.0
+        # Rotation about +Y tips the device's nose up in this convention.
+        q = (math.cos(half), 0.0, math.sin(half), 0.0)
+        samples.append(
+            MotionSample(
+                monotonic_time=i * dt,
+                user_acceleration_g=(visible / G_TO_MS2, 0.0, 0.0),
+                rotation_rate=(0.0, 0.0, 0.0),
+                gravity=(0.0, 0.0, -1.0),
+                quaternion=q,
+            )
+        )
+    return samples, accel_ms2
+
+
+def test_the_levelling_a_filter_did_is_recovered_from_the_gyro() -> None:
+    """The gyro reported no rotation, so every degree of tilt is the filter's.
+
+    That is the whole trick: a real manoeuvre appears in both the quaternion
+    and the gyro, and cancels; a levelling correction appears only in the
+    quaternion, and is exactly the acceleration that was swallowed.
+    """
+    samples, true_accel = _levelling_ahrs_samples()
+    times = np.array([s.monotonic_time for s in samples])
+    quats = np.array([s.quaternion for s in samples])
+    rates = np.array([s.rotation_rate for s in samples])
+
+    visible = np.array([s.user_acceleration_ms2[0] for s in samples])
+    # By the end of the minute the filter has eaten most of the signal.
+    assert visible[-1] < 0.5 * true_accel
+
+    correction = leveling_correction(times, quats, rates, tau_s=60.0)
+    recovered = visible + correction[:, 0]
+    late = times > 20.0
+    lost = true_accel - float(np.mean(visible[late]))
+    regained = float(np.mean(recovered[late])) - float(np.mean(visible[late]))
+    # Most of the deficit comes back, but not all of it, and that is correct:
+    # the integrator leaks, so a tilt held forever is indistinguishable from a
+    # mount simply bolted in nose-up. Only a lean the filter took on recently
+    # is attributable to levelling, and only that is given back.
+    assert regained > 0.5 * lost
+    assert float(np.mean(recovered[late])) < true_accel * 1.1
+
+
+def test_a_real_turn_is_not_mistaken_for_levelling() -> None:
+    """A rotation the gyro also reports must produce no correction at all."""
+    n, dt = 500, 0.02
+    rate = math.radians(6.0)
+    samples_t = np.arange(n) * dt
+    quats = np.array(
+        [(math.cos(rate * t / 2), 0.0, 0.0, math.sin(rate * t / 2)) for t in samples_t]
+    )
+    rates = np.tile([0.0, 0.0, rate], (n, 1))
+    correction = leveling_correction(samples_t, quats, rates, tau_s=20.0)
+    assert np.max(np.abs(correction)) < 0.05
+
+
+def test_the_correction_is_off_unless_the_trip_says_its_attitude_needs_it() -> None:
+    """It must never fire on a CoreMotion trip, which does not have the defect."""
+    samples, _ = _levelling_ahrs_samples()
+    cfg = MotionConfig()
+    cfg.leveling_recovery_tau_s = 20.0
+
+    plain = build_imu_stream(samples, cfg, calibration=MountCalibration())
+    ahrs = build_imu_stream(
+        samples,
+        cfg,
+        calibration=MountCalibration(attitude_source="accelerometer_levelled_ahrs"),
+    )
+    plain_a = np.array([c.a_world[0] for c in plain.controls])
+    ahrs_a = np.array([c.a_world[0] for c in ahrs.controls])
+    assert np.allclose(plain_a, ahrs_a[: len(plain_a)] * 0 + plain_a)
+    assert np.mean(ahrs_a[-50:]) > np.mean(plain_a[-50:]) * 1.5
+
+    cfg.leveling_recovery_tau_s = 0.0
+    disabled = build_imu_stream(
+        samples,
+        cfg,
+        calibration=MountCalibration(attitude_source="accelerometer_levelled_ahrs"),
+    )
+    assert np.allclose([c.a_world[0] for c in disabled.controls], plain_a)
+
+
+def test_road_vibration_separates_a_stopped_car_from_a_quiet_cruise() -> None:
+    """Level of acceleration cannot; that is why the GPS gate existed.
+
+    Both cars below report near-zero acceleration and near-zero yaw rate. Only
+    the moving one is still being shaken by the road.
+    """
+    rng = np.random.default_rng(7)
+    n, dt = 400, 0.02
+
+    def stream(vibration_g: float, cfg: MotionConfig) -> list[bool]:
+        samples = [
+            MotionSample(
+                monotonic_time=i * dt,
+                # Vertical only, as real road vibration mostly is: that keeps
+                # the horizontal level below `zupt_accel_ms2`, so the existing
+                # test cannot separate the two and the vibration test must.
+                user_acceleration_g=(0.0, 0.0, float(rng.normal(0.0, vibration_g))),
+                rotation_rate=(0.0, 0.0, 0.0),
+                gravity=(0.0, 0.0, -1.0),
+                quaternion=(1.0, 0.0, 0.0, 0.0),
+            )
+            for i in range(n)
+        ]
+        return [c.is_quiet for c in build_imu_stream(samples, cfg).controls]
+
+    cfg = MotionConfig()
+    cfg.zupt_vibration_g = 0.0
+    # Without the vibration test both look identically quiet.
+    assert any(stream(0.004, cfg)) and any(stream(0.05, cfg))
+
+    cfg.zupt_vibration_g = 0.02
+    assert any(stream(0.004, cfg)), "a parked car must still qualify"
+    assert not any(stream(0.05, cfg)), "a shaken car must not"

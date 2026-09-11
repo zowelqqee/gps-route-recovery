@@ -1,10 +1,14 @@
 # Python
 processor/.venv/
+.venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .coverage
+.mypy_cache/
+.ruff_cache/
+catboost_info/
 
 # Cached OpenStreetMap data.
 # spb-center.graphml is committed on purpose (1 MB) so the pipeline runs with
@@ -15,11 +19,34 @@ cache/osmnx/
 # Run outputs
 runs/
 
+# Raw IMU/GPS log dumps and generated plots (too large for git; not versioned)
+live_logs/
+real_tests/
+docs/plots/
+
+# Node / JS (replay-ui also has its own, more detailed .gitignore)
+node_modules/
+dist/
+.next/
+
 # Xcode
 ios/GeoTraceLab/GeoTraceLab.xcodeproj/xcuserdata/
 ios/GeoTraceLab/GeoTraceLab.xcodeproj/project.xcworkspace/xcuserdata/
 DerivedData/
 *.xcuserstate
+
+# Claude Code agent state (worktrees are full nested checkouts, never commit)
+.claude/worktrees/
+.claude/settings.local.json
+
+# Editors
+.vscode/
+.idea/
+
+# Env files
+.env
+.env.local
+.env.*.local
 
 # macOS
 .DS_Store

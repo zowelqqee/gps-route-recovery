@@ -9,6 +9,7 @@
                             --confidence 0.95 --seed 42
     geotrace report         --run runs/trip-001-broken --output runs/trip-001-broken/report.html
     geotrace inspect        --trip runs/trip-001-broken
+    geotrace import-live    --logs live_logs --day 2026-07-22 --output runs/live-0722
 """
 
 from __future__ import annotations
@@ -35,6 +36,14 @@ from geotrace.fault_injection import (
     scenario_offset_dropout_recovery,
 )
 from geotrace.loader import TripLoadError, load_trip, results_dir, write_trip
+from geotrace.live_logs import (
+    DEFAULT_IMU_RATE_HZ,
+    ImportSpec,
+    LiveLogError,
+    available_days,
+    build_trip,
+    describe_sessions,
+)
 from geotrace.pipeline import ALGORITHMS, ReconstructionError, build_metrics, run_reconstruction
 from geotrace.road_graph import RoadGraphError, RoadNetwork, clip_graph, download_graph, download_graph_bbox, load_graph
 
@@ -71,6 +80,18 @@ def _build_config(args: argparse.Namespace) -> Config:
         cfg.rng_mode = args.rng
     if getattr(args, "allow_simulated", False):
         cfg.gps.allow_simulated_fixes = True
+    if getattr(args, "gps_start_only", False):
+        cfg.gps_start_only = True
+    if getattr(args, "leveling_tau", None) is not None:
+        cfg.motion.leveling_recovery_tau_s = float(args.leveling_tau)
+    if getattr(args, "zupt_vibration", None) is not None:
+        cfg.motion.zupt_vibration_g = float(args.zupt_vibration)
+    if getattr(args, "zupt_without_gps", False):
+        cfg.motion.zupt_requires_gps = False
+    if getattr(args, "accel_deadband", None) is not None:
+        cfg.motion.accel_deadband_ms2 = float(args.accel_deadband)
+    if getattr(args, "accel_smooth", None) is not None:
+        cfg.motion.accel_smooth_window_s = float(args.accel_smooth)
     if getattr(args, "confidence", None) is not None:
         if not 0.0 < args.confidence < 1.0:
             raise CLIError("--confidence must be strictly between 0 and 1 (e.g. 0.95)")
@@ -219,9 +240,9 @@ def cmd_reconstruct(args: argparse.Namespace) -> int:
         )
     origin = trip.usable_locations[0]
     network = _load_network(args.graph, origin.latitude, origin.longitude, args.radius)
-    if network is None and algorithm == "road_particle_filter":
+    if network is None and algorithm in ("road_ekf", "road_particle_filter"):
         raise CLIError(
-            "--algorithm road-particle-filter needs --graph.\n"
+            f"--algorithm {algorithm.replace('_', '-')} needs --graph.\n"
             "Download the map once with:\n"
             '  geotrace download-map --place "Saint Petersburg, Russia" --output cache/spb.graphml'
         )
@@ -262,7 +283,7 @@ def cmd_reconstruct(args: argparse.Namespace) -> int:
         print(f"Position error vs reference: mean {error['mean_m']:.1f} m, "
               f"median {error['median_m']:.1f} m, p95 {error['p95_m']:.1f} m, "
               f"max {error['max_m']:.1f} m")
-        print(f"95% polygon coverage: {metrics.polygons.get('coverage_95')}")
+        print(f"Empirical coverage of nominal {cfg.polygon.confidence:.0%} regions: {metrics.polygons.get('coverage')}")
     else:
         print("No reference track: position error is undefined for a real outage.")
     print(f"\nResults written to {out}")
@@ -274,7 +295,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     run = Path(args.run)
     trip, _ = load_trip(run)
-    out_dir = run / "results"
+    out_dir = Path(args.results_dir) if args.results_dir else run / "results"
     metrics_path = out_dir / "metrics.json"
     if not metrics_path.exists():
         raise CLIError(
@@ -295,6 +316,10 @@ def cmd_report(args: argparse.Namespace) -> int:
     result = run_reconstruction(
         trip, network, cfg, algorithm=saved["algorithm"], output_dt=saved.get("output_dt", 1.0)
     )
+    # A replay can use a newer engine than the saved artifacts. Its numbers
+    # must describe the route actually drawn, never the old metrics.json.
+    metrics = build_metrics(trip, result, cfg).to_json()
+    metrics["notes"].append("Report route and metrics were recomputed together using the current engine; historical reconstruction files may differ.")
     photo_diags = json.loads((out_dir / "diagnostics.json").read_text("utf-8")).get("photos", [])
     inputs = ReportInputs(
         trip=trip,
@@ -309,6 +334,133 @@ def cmd_report(args: argparse.Namespace) -> int:
     out = build_report(inputs, args.output or (out_dir / "report.html"))
     print(f"Wrote {out}")
     return 0
+
+
+def cmd_import_live(args: argparse.Namespace) -> int:
+    """Turn one session of the vehicle logger's day files into a trip."""
+    root = Path(args.logs)
+    spec = ImportSpec(
+        gps_dir=root / "gps_logs",
+        imu_dir=root / "imu_logs",
+        day=args.day,
+        session_index=args.session,
+        gps_warmup_s=args.gps_warmup,
+        keep_all_gps=args.keep_all_gps,
+        imu_rate_hz=args.imu_rate,
+        pre_roll_s=args.pre_roll,
+        max_duration_s=args.max_duration,
+        trip_id=args.trip_id,
+        clock_align=args.clock_align,
+        clock_offset_s=args.clock_offset,
+    )
+    if args.day is None:
+        days = available_days(root)
+        if not days:
+            raise CLIError(
+                f"{root} has no day with both a GPS and an IMU file. Expected "
+                f"{root}/gps_logs/<date>_GPS_logs.csv and "
+                f"{root}/imu_logs/<date>_IMU_logs.csv"
+            )
+        print("Days available in " + str(root) + ":")
+        for day in days:
+            print("  " + day)
+        print("\nPick one with --day, and add --list to see its sessions.")
+        return 0
+    for path in (spec.gps_csv, spec.imu_csv):
+        if not path.exists():
+            raise CLIError(f"{path} does not exist")
+
+    if args.list:
+        sessions = describe_sessions(spec)
+        if not sessions:
+            print(f"{args.day}: no session longer than a minute")
+            return 0
+        print(f"{args.day}: {len(sessions)} session(s)")
+        for session in sessions:
+            info = session.to_json()
+            print(
+                "  [{index}] {start} .. {end}  {duration_s:>7.0f} s  "
+                "{gps_fixes:>6} fixes  {moving_s:>6.0f} s moving  "
+                "{gps_distance_km:>7.2f} km".format(**info)
+                + (f"  {info['gps_jumps']} GPS jumps" if info["gps_jumps"] else "")
+            )
+        return 0
+
+    if not args.output:
+        raise CLIError("--output is required (or pass --list to only inspect the day)")
+
+    trip, provenance = build_trip(spec)
+    out = write_trip(trip, args.output, copy_photos=False)
+
+    mount = provenance["mount_estimate"]
+    print(f"Imported {trip.metadata.trip_id} -> {out}")
+    print(
+        "  window       {start} .. {end}".format(**provenance["window"])
+        + f"  ({provenance['session']['duration_s']:.0f} s of session "
+        f"{spec.session_index} of {provenance['sessions_in_day']})"
+    )
+    print(
+        f"  motion       {len(trip.motions)} samples at {spec.imu_rate_hz:g} Hz, "
+        f"{provenance['still_pre_roll_s']:.0f} s standing still first"
+    )
+    if args.keep_all_gps:
+        print(f"  gps          {len(trip.locations)} fixes, none withheld")
+    else:
+        print(
+            f"  gps          {len(trip.locations)} fixes in the first "
+            f"{spec.gps_warmup_s:g} s; {len(trip.reference_locations)} later "
+            "fixes withheld as the reference"
+        )
+    clock = provenance["clock_offset"]
+    print(
+        f"  clock        GPS runs {clock['seconds']:+.2f} s behind the IMU "
+        f"({clock['source']}, correlation {clock['correlation']:.2f})"
+    )
+    if clock["note"]:
+        print(f"  ! {clock['note']}")
+    print(
+        f"  accuracy     {provenance['accuracy_source']} "
+        f"({provenance['reader']['nmea_matched']} of "
+        f"{provenance['gps_fixes_kept'] + provenance['gps_fixes_withheld']} "
+        "fixes matched to a GGA sentence)"
+    )
+    print(
+        f"  mount        initial course {mount['initial_course_deg']:.1f} deg, world "
+        f"rotation {mount['world_yaw_offset_deg']:.1f} deg, box turned "
+        f"{mount['mount_yaw_deg']:.1f} deg in its bracket; quality "
+        f"{mount['quality']} (coherence {mount['coherence']:.2f} over "
+        f"{mount['samples']} instants)"
+    )
+    for note in mount["notes"]:
+        print(f"  ! {note}")
+    if trip.metadata.calibration is None:
+        print(
+            "  ! no mount calibration was written: the reconstruction will fall "
+            "back to guessing the forward axis from the first acceleration burst"
+        )
+    return 0
+
+
+def cmd_pacman(args: argparse.Namespace) -> int:
+    """Thin shim onto `geotrace.pacman_tracker.benchmark`."""
+    from geotrace.pacman_tracker.benchmark import main as pacman_main
+
+    argv: list[str] = ["--graph", str(args.graph)]
+    for trip in args.trip:
+        argv += ["--trip", str(trip)]
+    if args.output:
+        argv += ["--output", str(args.output)]
+    if args.clip_radius is not None:
+        argv += ["--clip-radius", str(args.clip_radius)]
+    if args.max_hypotheses is not None:
+        argv += ["--max-hypotheses", str(args.max_hypotheses)]
+    if args.prune_margin is not None:
+        argv += ["--prune-margin", str(args.prune_margin)]
+    if args.no_s_update:
+        argv.append("--no-s-update")
+    if args.no_split:
+        argv.append("--no-split")
+    return pacman_main(argv)
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -407,7 +559,7 @@ def _write_outputs(
     load_report: Any,
 ) -> None:
     from geotrace.polygons import uncertainty_to_geojson
-    from geotrace.visualization import locations_geojson, track_geojson
+    from geotrace.visualization import locations_geojson, track_geojson, reference_kind
 
     frame = result.frame
     has_reference = bool(trip.reference_locations)
@@ -419,8 +571,17 @@ def _write_outputs(
             result.algorithm,
             {
                 "description": (
+                    "Filtered road-coordinate EKF hypothesis. Geometry follows directed road edges; "
+                    "disconnected hypothesis changes break the line. The displayed corridors contain "
+                    "only their reported conditional model mass, without a coverage guarantee."
+                    if result.algorithm == "road_ekf" else
                     "Probabilistic estimate of the driven route. Not a measured "
-                    "track and not an exact path."
+                    "track and not an exact path. While GPS is trusted this is "
+                    "the GPS-corrected inertial estimate; during an outage it is "
+                    "walked along a continuous route of connected road-graph "
+                    "edges, so it stays on the carriageway but may follow the "
+                    "wrong branch - see the uncertainty polygons for the "
+                    "alternatives that were still live."
                 ),
                 "algorithm": result.algorithm,
                 "seed": cfg.seed,
@@ -457,8 +618,8 @@ def _write_outputs(
         locations_geojson(
             trip.locations,
             frame,
-            "corrupted GPS" if has_reference else "recorded GPS",
-            {"synthetically_corrupted": has_reference},
+            "recorded GPS supplied to the filters",
+            {"synthetically_corrupted": bool(trip.faults), "reference_kind": reference_kind(trip)},
         ),
     )
     if has_reference:
@@ -466,13 +627,16 @@ def _write_outputs(
             out / "reference-gps.geojson",
             locations_geojson(
                 trip.reference_locations, frame, "reference route",
-                {"note": "ground truth only because the corruption was synthetic"},
+                {"reference_kind": reference_kind(trip)},
             ),
         )
     for name in result.tracks:
         if name != result.algorithm:
             _write_json(out / f"baseline-{name.replace('_', '-')}.geojson",
                         track_geojson(result, name, {"role": "baseline"}))
+    if result.road_uncertainty:
+        _write_json(out / "road-posterior-uncertainty.geojson",
+                    uncertainty_to_geojson(result.road_uncertainty, frame, trip.t0))
 
     _write_json(out / "metrics.json", metrics.to_json())
     diagnostics = dict(result.diagnostics)
@@ -486,21 +650,25 @@ def _write_outputs(
     road_endpoint = result.primary.xy[-1] if result.primary.xy else None
     _write_json(out / "tracking-result.json", {
         "schema_version": 2,
-        "tracking_architecture": "dual-tracker-v1",
+        "tracking_architecture": result.diagnostics.get("tracking_architecture", "dual-tracker-v1"),
         "road_result": {
             "route": result.primary.to_geojson(frame),
             "endpoint": list(road_endpoint) if road_endpoint else None,
-            "confidence": cfg.polygon.confidence if result.algorithm == "road_particle_filter" else None,
+            "confidence": None,
+            "nominal_region_confidence": None if result.algorithm == "road_ekf" else cfg.polygon.confidence,
+            "status": result.uncertainty[-1].status if result.uncertainty else "LOST",
+            "represented_mass": result.uncertainty[-1].represented_mass if result.uncertainty else None,
+            "calibrated": False,
         },
         "parking_result": parking_payload,
-        "final_vehicle_position": parking_payload["position"] if parking_payload else None,
-        "final_vehicle_position_source": "parking_tracker",
+        "final_vehicle_position": result.diagnostics["final_vehicle_position"],
+        "final_vehicle_position_source": result.diagnostics["final_vehicle_position_source"],
     })
     _write_json(
         out / "reconstruction-state.json",
         {
             "schema_version": 2,
-            "tracking_architecture": "dual-tracker-v1",
+            "tracking_architecture": result.diagnostics.get("tracking_architecture", "dual-tracker-v1"),
             "algorithm": result.algorithm,
             "config": cfg.to_dict(),
             "graph_path": diagnostics.get("graph_path"),
@@ -574,14 +742,52 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reconstruct", help="detect the GPS failure and rebuild the route")
     p.add_argument("--trip", required=True)
     p.add_argument("--graph", default=None, help="cached GraphML road graph")
-    p.add_argument("--algorithm", default="road-particle-filter",
-                   help="road-particle-filter | ekf-dead-reckoning | last-known-position")
+    p.add_argument("--algorithm", default="road-ekf",
+                   help="road-ekf (default) | road-particle-filter (legacy) | ekf-dead-reckoning | last-known-position")
     p.add_argument("--particles", type=int, default=None, help="default: 5000")
     p.add_argument("--confidence", type=float, default=None, help="polygon mass, default 0.95")
     p.add_argument("--seed", type=int, default=None, help="default: 42")
     p.add_argument("--radius", type=float, default=4000.0,
                    help="metres of road graph to keep around the trip origin")
     p.add_argument("--output-dt", type=float, default=1.0, help="estimate output interval, s")
+    # Experimental, and deliberately not bundled behind one convenient switch.
+    # They only pay off together, and only on a recording where dead reckoning
+    # rather than street choice is what is failing: on one measured day the
+    # full set took 34% off the dead-reckoning error, on another it cost 84 m
+    # of accuracy. A single "make it better" flag would hide that. See README.
+    p.add_argument(
+        "--leveling-tau", type=float, default=None, metavar="SECONDS",
+        help=(
+            "experimental: undo AHRS levelling with this time constant "
+            "(0 disables). Fixes the motion model's transfer function; needs "
+            "--accel-deadband 0.2 and a raised accel_noise beside it, or it "
+            "makes the reconstruction worse and overconfident"
+        ),
+    )
+    p.add_argument(
+        "--zupt-without-gps", action="store_true",
+        help="experimental: allow zero-velocity updates while GPS is absent",
+    )
+    p.add_argument(
+        "--accel-smooth", type=float, default=None, metavar="SECONDS",
+        help=(
+            "experimental: boxcar-average world-frame acceleration over this "
+            "window before anything else touches it (0 disables). Peak "
+            "correlation with true dv/dt measured at 5s on one day; fixes the "
+            "signal's shape a little, not its shrunken amplitude"
+        ),
+    )
+    p.add_argument(
+        "--zupt-vibration", type=float, default=None, metavar="G",
+        help=(
+            "road-vibration ceiling for calling the vehicle stopped; 0 "
+            "disables. Only meaningful together with --zupt-without-gps"
+        ),
+    )
+    p.add_argument(
+        "--accel-deadband", type=float, default=None, metavar="MS2",
+        help="bias-compensated acceleration below this counts as zero",
+    )
     p.add_argument("--parking-zones", default=None, help="GeoJSON of parking-zone polygons")
     p.add_argument(
         "--rng", choices=("numpy", "parity"), default=None,
@@ -598,20 +804,106 @@ def build_parser() -> argparse.ArgumentParser:
             "only for trips recorded in the iOS Simulator; never for real data."
         ),
     )
+    p.add_argument(
+        "--gps-start-only", action="store_true",
+        help="seed from the first GPS fix, then use only IMU and the road graph",
+    )
     p.add_argument("--output", default=None, help="write results here instead of <trip>/results")
     p.add_argument("--config", default=None, help="JSON config overriding every threshold")
     p.set_defaults(func=cmd_reconstruct)
 
     p = sub.add_parser("report", help="render results/report.html for a finished run")
     p.add_argument("--run", required=True, help="the trip directory that was reconstructed")
+    p.add_argument(
+        "--results-dir", default=None,
+        help="read reconstruction artifacts from a separate results directory",
+    )
     p.add_argument("--output", default=None)
     p.add_argument("--polygon-stride", type=int, default=10,
                    help="draw every Nth polygon set (default 10, keeps the map readable)")
     p.set_defaults(func=cmd_report)
 
+    p = sub.add_parser(
+        "import-live",
+        help="convert the vehicle logger's day files into a trip directory",
+        description=(
+            "Read <logs>/gps_logs/<day>_GPS_logs.csv and "
+            "<logs>/imu_logs/<day>_IMU_logs.csv, split the day into logger "
+            "sessions, and write one of them as a trip. GPS is kept for the "
+            "opening --gps-warmup seconds only; every later fix is withheld "
+            "into reference-samples.jsonl so the reconstruction can be scored "
+            "without ever having seen it."
+        ),
+    )
+    p.add_argument("--logs", default="live_logs", help="directory holding gps_logs/ and imu_logs/")
+    p.add_argument("--day", default=None, help="e.g. 2026-07-22; omitted = list the days present")
+    p.add_argument("--list", action="store_true", help="list the sessions in the day and stop")
+    p.add_argument("--session", type=int, default=0, help="which session of the day (default: 0)")
+    p.add_argument("--output", default=None, help="trip directory to write")
+    p.add_argument(
+        "--gps-warmup", type=float, default=120.0, metavar="SECONDS",
+        help=(
+            "how many seconds of driving the reconstruction may see GPS for "
+            "(default: 120). The stationary pre-roll before the car moves is "
+            "not counted against it."
+        ),
+    )
+    p.add_argument(
+        "--keep-all-gps", action="store_true",
+        help="withhold nothing; import the whole GPS track (a control run)",
+    )
+    p.add_argument(
+        "--imu-rate", type=float, default=DEFAULT_IMU_RATE_HZ, metavar="HZ",
+        help=f"decimate the 100 Hz logger to this rate (default: {DEFAULT_IMU_RATE_HZ:g})",
+    )
+    p.add_argument(
+        "--pre-roll", type=float, default=20.0, metavar="SECONDS",
+        help="stationary seconds kept before the car moves, where bias is measured (default: 20)",
+    )
+    p.add_argument(
+        "--max-duration", type=float, default=None, metavar="SECONDS",
+        help="stop the trip this long after its start",
+    )
+    p.add_argument(
+        "--clock-align", choices=("warmup", "session", "none"), default="warmup",
+        help=(
+            "where to measure the GPS/IMU clock offset: inside the warm-up the "
+            "reconstruction may see (default), across the whole session "
+            "(better, but uses withheld fixes), or not at all"
+        ),
+    )
+    p.add_argument(
+        "--clock-offset", type=float, default=None, metavar="SECONDS",
+        help="a known offset to add to the GPS clock; skips the search",
+    )
+    p.add_argument("--trip-id", default=None)
+    p.set_defaults(func=cmd_import_live)
+
     p = sub.add_parser("inspect", help="print a summary of a trip directory")
     p.add_argument("--trip", required=True)
     p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser(
+        "pacman",
+        help="benchmark the road-locked Pacman tracker against withheld GPS",
+        description=(
+            "Runs the parallel reconstruction core in geotrace.pacman_tracker. "
+            "It shares this project's loaders, frame, IMU front end and road "
+            "graph and nothing else; the old filters are untouched."
+        ),
+    )
+    p.add_argument("--trip", required=True, action="append",
+                   help="trip directory; repeat for several")
+    p.add_argument("--graph", required=True)
+    p.add_argument("--output", default=None)
+    p.add_argument("--clip-radius", type=float, default=None,
+                   help="metres; default is derived from the outage duration")
+    p.add_argument("--max-hypotheses", type=int, default=None)
+    p.add_argument("--prune-margin", type=float, default=None)
+    p.add_argument("--no-s-update", action="store_true",
+                   help="disable the along-road term of the curvature update")
+    p.add_argument("--no-split", action="store_true")
+    p.set_defaults(func=cmd_pacman)
 
     return parser
 
@@ -624,7 +916,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     try:
         return int(args.func(args) or 0)
-    except (CLIError, FaultError, TripLoadError, ReconstructionError, RoadGraphError) as exc:
+    except (CLIError, FaultError, TripLoadError, LiveLogError, ReconstructionError, RoadGraphError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except FileNotFoundError as exc:

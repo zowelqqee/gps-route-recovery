@@ -90,7 +90,8 @@ def physical_gate(
     meaningful no matter how long the fix has been out of contact.
     """
     dt = max(dt, 0.0)
-    if math.isfinite(max_speed) and previous_speed < max_speed and max_accel > 0:
+    previous_speed = max(0.0, min(previous_speed, max_speed))
+    if math.isfinite(max_speed) and max_accel > 0:
         t_to_cap = (max_speed - previous_speed) / max_accel
         if dt <= t_to_cap:
             d_max = previous_speed * dt + 0.5 * max_accel * dt * dt
@@ -377,14 +378,18 @@ class GPSQualityMonitor:
         )
         step = math.hypot(*delta)
         implied_speed = step / dt
+        # Differencing two noisy positions amplifies noise by 1/dt. At 10 Hz,
+        # a few metres of ordinary GPS scatter are tens of m/s; Doppler speed
+        # cannot be compared to that with a fixed speed-only threshold.
+        position_sigma = math.hypot(measurement_sigma(sample, cfg), measurement_sigma(previous, cfg))
 
         if sample.has_valid_speed:
-            if abs(float(sample.speed or 0.0) - implied_speed) > cfg.recovery_speed_mismatch_ms:
+            if abs(float(sample.speed or 0.0) - implied_speed) > cfg.recovery_speed_mismatch_ms + 2.0 * position_sigma / dt:
                 reasons.append("speed_inconsistent_with_previous_fix")
 
         if (
             sample.has_valid_course
-            and step >= cfg.recovery_min_step_m
+            and step >= max(cfg.recovery_min_step_m, 2.0 * position_sigma)
             and implied_speed >= cfg.min_speed_for_course_ms
         ):
             implied_heading = math.atan2(delta[1], delta[0])

@@ -10,6 +10,8 @@ import pytest
 from geotrace.coordinates import LocalFrame
 from geotrace.road_graph import RoadNetwork, extract_turn_restrictions
 
+from conftest import edge_named
+
 ORIGIN_LAT = 59.9311
 ORIGIN_LON = 30.3609
 
@@ -164,3 +166,64 @@ def test_restrictions_survive_a_json_round_trip_into_a_road_network(
     to_index = network.edge_index[("B", "D", 0)]
     allowed = network.allowed_successors(from_index, history=(from_index,))
     assert to_index not in allowed
+
+
+# ------------------------------------------- distance-budgeted reachability
+
+
+def test_reachable_within_distance_is_bounded_by_the_budget(fork_network) -> None:
+    """The stem is 500 m; from its start a 100 m budget cannot leave it."""
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    reach = fork_network.reachable_within_distance(stem, s=0.0, budget_m=100.0)
+    assert set(reach) == {stem}
+    assert reach[stem] == (0.0, stem)
+
+
+def test_reachable_within_distance_counts_only_the_edge_still_ahead(fork_network) -> None:
+    """Standing 490 m along a 500 m edge, the junction is 10 m away, not 500."""
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    reach = fork_network.reachable_within_distance(stem, s=490.0, budget_m=50.0)
+    assert {branch_a, branch_b} <= set(reach)
+
+
+def test_reachable_within_distance_labels_the_first_hop_at_a_fork(fork_network) -> None:
+    """Every edge is tagged with which way out of the junction reaches it,
+    so a caller can sort particle weight into branches in one pass."""
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    branch_a = edge_named(fork_network, "Branch A", (500.0, 0.0))
+    branch_b = edge_named(fork_network, "Branch B", (500.0, 0.0))
+    reach = fork_network.reachable_within_distance(stem, s=499.0, budget_m=5000.0)
+    assert reach[branch_a][1] == branch_a
+    assert reach[branch_b][1] == branch_b
+    for edge, (_distance, first_hop) in reach.items():
+        if edge != stem:
+            assert first_hop in (branch_a, branch_b)
+
+
+def test_reachable_within_distance_honours_a_one_way_street(oneway_network) -> None:
+    """A displayed route must not be walked the wrong way down a one-way."""
+    one_way = edge_named(oneway_network, "One way east", (300.0, 0.0))
+    reach = oneway_network.reachable_within_distance(one_way, s=0.0, budget_m=5000.0)
+    stem = edge_named(oneway_network, "Stem", (0.0, 0.0))
+    assert stem not in reach, "the one-way street cannot lead back into the stem"
+
+
+def test_reachable_within_distance_always_includes_its_own_edge(fork_network) -> None:
+    stem = edge_named(fork_network, "Stem", (0.0, 0.0))
+    reach = fork_network.reachable_within_distance(stem, s=0.0, budget_m=0.0)
+    assert set(reach) == {stem}
+
+
+def test_route_between_returns_the_connected_road_geometry(fork_network) -> None:
+    """A post-outage route is topology, not an interpolated straight line."""
+    route = fork_network.route_between((100.0, 0.0), (1000.0, 500.0))
+    assert route is not None
+    assert route.length_m == pytest.approx(400.0 + 2**0.5 * 500.0, abs=2.0)
+    assert route.coords[0] == pytest.approx((100.0, 0.0), abs=1.0)
+    assert route.coords[-1] == pytest.approx((1000.0, 500.0), abs=1.0)
+
+
+def test_route_between_never_reverses_a_one_way_street(oneway_network) -> None:
+    assert oneway_network.route_between((850.0, 0.0), (350.0, 0.0)) is None

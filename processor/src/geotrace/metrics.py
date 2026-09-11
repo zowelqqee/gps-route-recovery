@@ -51,7 +51,8 @@ class ErrorSeries:
 
 
 def interpolate_reference(
-    ref_times: Sequence[float], ref_xy: np.ndarray, query_times: Sequence[float]
+    ref_times: Sequence[float], ref_xy: np.ndarray, query_times: Sequence[float],
+    max_gap_s: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Linear interpolation of the reference track onto the estimate timeline.
 
@@ -62,7 +63,14 @@ def interpolate_reference(
     query = np.asarray(query_times, dtype=float)
     if ref_times.size == 0 or query.size == 0:
         return np.zeros((len(query), 2)), np.zeros(len(query), dtype=bool)
+    order = np.argsort(ref_times, kind="stable")
+    ref_times, ref_xy = ref_times[order], np.asarray(ref_xy)[order]
+    ref_times, indices = np.unique(ref_times, return_index=True)
+    ref_xy = ref_xy[indices]
     valid = (query >= ref_times[0]) & (query <= ref_times[-1])
+    right = np.searchsorted(ref_times, query, side="left").clip(0, len(ref_times) - 1)
+    left = np.maximum(0, right - 1)
+    valid &= (ref_times[right] == query) | (ref_times[right] - ref_times[left] <= max_gap_s)
     east = np.interp(query, ref_times, ref_xy[:, 0])
     north = np.interp(query, ref_times, ref_xy[:, 1])
     return np.column_stack([east, north]), valid
@@ -78,7 +86,7 @@ def coverage_and_area(
         return {"coverage_95": None, "mean_area_m2": None, "median_area_m2": None, "samples": 0}
     times = [s.t for s in sets]
     reference, valid = interpolate_reference(reference_times, reference_xy, times)
-    areas = np.array([s.total_area_m2 for s in sets], dtype=float)
+    areas = np.array([s.total_area_m2 for s, ok in zip(sets, valid) if ok], dtype=float)
 
     covered = 0
     counted = 0
@@ -89,6 +97,8 @@ def coverage_and_area(
         if item.contains(reference[i]):
             covered += 1
     return {
+        "nominal_confidence": sets[0].confidence if sets[0].represented_mass is None else None,
+        "coverage": (covered / counted) if counted else None,
         "coverage_95": (covered / counted) if counted else None,
         "mean_area_m2": float(np.mean(areas)) if areas.size else None,
         "median_area_m2": float(np.median(areas)) if areas.size else None,
@@ -121,11 +131,13 @@ def branch_accuracy(
     branch_counts = []
     for i, item in enumerate(sets):
         branch_counts.append(len(item.components))
-        if not valid[i] or not item.components:
+        if not valid[i]:
+            continue
+        if item.represented_mass is None and (not item.components or item.n_particles == 0):
             continue
         counted += 1
         point = shapely.points(float(reference[i][0]), float(reference[i][1]))
-        hits = [bool(shapely.contains(c.geometry, point)) for c in item.components]
+        hits = [bool(shapely.covers(c.geometry, point)) for c in sorted(item.components, key=lambda c: -c.probability)]
         if hits and hits[0]:
             top1 += 1
         if any(hits[:3]):
@@ -253,6 +265,7 @@ class MetricsBundle:
     parking: dict[str, Any] = field(default_factory=dict)
     runtime: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    reference_quality: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -267,4 +280,5 @@ class MetricsBundle:
             "parking": self.parking,
             "runtime": self.runtime,
             "notes": self.notes,
+            "reference_quality": self.reference_quality,
         }

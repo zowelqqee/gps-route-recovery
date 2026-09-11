@@ -36213,6 +36213,17 @@
       "map_offset_m": 13.68
     }
   ],
+  "display_route": {
+    "walks": 33,
+    "refused_off_graph": 34,
+    "ticks": 417,
+    "junctions_crossed": 10,
+    "dead_ends": 0,
+    "corrections_accepted": 234,
+    "corrections_refused": 169,
+    "off_best_branch_ticks": 1,
+    "active_at_end": false
+  },
   "imu_shocks": [
     {
       "start_s": 484.1,
@@ -36271,7 +36282,7 @@
       "end_s": 1263.5
     }
   ],
-  "runtime_s": 108.278,
+  "runtime_s": 122.01,
   "road_graph": {
     "edges": 11472,
     "nodes": 5665,
@@ -36412,7 +36423,13 @@
       "outage_map_assist_gain": 0.45,
       "outage_heading_assist_min_resultant": 0.9,
       "outage_heading_assist_max_gap_rad": 0.6,
-      "outage_heading_assist_gain": 0.35
+      "outage_heading_assist_gain": 0.35,
+      "display_route_constrained": true,
+      "display_route_max_snap_m": 30.0,
+      "display_route_ekf_sigma_k": 1.0,
+      "display_route_budget_margin_m": 25.0,
+      "display_route_min_branch_mass": 0.05,
+      "display_route_along_gain": 0.3
     },
     "polygon": {
       "confidence": 0.95,

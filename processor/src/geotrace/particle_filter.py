@@ -296,6 +296,8 @@ class RoadParticleFilter:
         dt: float,
         deadband: bool = False,
         yaw_trust: float = 1.0,
+        a_vehicle: Optional[float] = None,
+        coast: bool = False,
     ) -> None:
         """One motion step for every particle.
 
@@ -329,7 +331,7 @@ class RoadParticleFilter:
         # remains the gyro/course hypothesis used to score junction choices;
         # it must not be used to move the particle off the road geometry.
         road_bearing = self.road_bearings()
-        a_long = a_world[0] * np.cos(road_bearing) + a_world[1] * np.sin(road_bearing)
+        a_long = (a_world[0] * np.cos(road_bearing) + a_world[1] * np.sin(road_bearing)) if a_vehicle is None else a_vehicle
         a_hat = np.clip(a_long - self.b_a, -self.motion.max_accel_ms2, self.motion.max_accel_ms2)
         if deadband:
             # Below the deadband, a_hat is indistinguishable from residual
@@ -340,6 +342,9 @@ class RoadParticleFilter:
             # saturated value.
             a_hat = np.where(np.abs(a_hat) < self.motion.accel_deadband_ms2, 0.0, a_hat)
         w_hat = (yaw_rate - self.b_w) * yaw_trust
+        if coast:
+            a_hat = np.zeros(n)
+            w_hat = np.zeros(n)
 
         scale = math.sqrt(dt / max(self.motion.filter_dt_s, 1e-6))
         eps_psi = rng.normal(0.0, self.pf.sigma_psi_rad * scale, n)
@@ -347,9 +352,17 @@ class RoadParticleFilter:
         eps_v = rng.normal(0.0, self.pf.sigma_v * scale, n)
 
         self.psi = wrap_angle(self.psi + w_hat * dt + eps_psi)
-        ds = self.v * dt + 0.5 * a_hat * dt * dt + eps_s
+        active = np.full(n, dt)
+        braking = (a_hat < 0.0) & (self.v + a_hat * dt < 0.0)
+        limiting = (a_hat > 0.0) & (self.v + a_hat * dt > self.motion.max_speed_ms)
+        active[braking] = -self.v[braking] / a_hat[braking]
+        active[limiting] = (self.motion.max_speed_ms - self.v[limiting]) / a_hat[limiting]
+        ds = self.v * active + 0.5 * a_hat * active**2 + eps_s
+        ds[limiting] += self.motion.max_speed_ms * (dt - active[limiting])
         self.v = np.clip(self.v + a_hat * dt + eps_v, 0.0, self.motion.max_speed_ms)
-        self.s = self.s + np.maximum(ds, 0.0)
+        # Position noise describes uncertainty, so it must remain signed.
+        # Rectifying it adds sigma_s/sqrt(2*pi) metres at every stopped tick.
+        self.s = self.s + ds
 
         # Bias random walk.
         self.b_a += rng.normal(0.0, self.motion.accel_bias_rw * math.sqrt(dt), n)
@@ -410,11 +423,20 @@ class RoadParticleFilter:
                 if total <= 0 or not math.isfinite(total):
                     choice = int(options[rng.integers(options.size)])
                 else:
-                    choice = int(options[rng.choice(options.size, p=probs / total)])
+                    proposal = probs / total
+                    chosen = int(rng.choice(options.size, p=proposal))
+                    choice = int(options[chosen])
+                    prior = self._route_prior[options]
+                    # The gyro-guided proposal is not the transition prior.
+                    # Importance sampling needs p(edge)/q(edge); otherwise
+                    # heading is counted here and again in update_weights.
+                    self.map_likelihood[i] *= float(
+                        (prior[chosen] / prior.sum()) / proposal[chosen]
+                    )
                 self.result.junction_splits += 1
 
             self.edge_idx[i] = choice
-            self.s[i] = min(remainder, float(self._lengths[choice]))
+            self.s[i] = remainder
             history = self._restriction_history[i] + (choice,)
             self._restriction_history[i] = history[-self.net.restriction_history_limit:]
             # Nudge the heading onto the new road; the gyro still drives the rest.
@@ -461,20 +483,19 @@ class RoadParticleFilter:
         gps_sigma: Optional[float] = None,
         gps_course_rad: Optional[float] = None,
         gps_speed: Optional[float] = None,
+        map_evidence_scale: float = 1.0,
     ) -> None:
         """w~_i = w_i * L_GPS * L_psi * L_v * L_map, then normalise."""
-        likelihood = self.map_likelihood.copy()
+        log_likelihood = np.log(np.maximum(self.map_likelihood, np.finfo(float).tiny))
 
         # L_psi - particle heading against the bearing of the road it sits on.
         heading_error = np.asarray(wrap_angle(self.psi - self.road_bearings()), dtype=float)
-        likelihood *= np.exp(
-            -(heading_error**2) / (2 * self.pf.sigma_heading_rad**2)
-        )
+        log_likelihood -= map_evidence_scale * heading_error**2 / (2 * self.pf.sigma_heading_rad**2)
 
         # L_v - a particle must not be doing 90 km/h in a courtyard.
         limits = self._speed_limits[self.edge_idx]
         excess = np.maximum(0.0, self.v - limits * 1.4)
-        likelihood *= np.exp(-(excess**2) / (2 * self.pf.sigma_speed_ms**2))
+        log_likelihood -= map_evidence_scale * excess**2 / (2 * self.pf.sigma_speed_ms**2)
 
         self.last_gps_likelihood = 1.0
         if gps_xy is not None:
@@ -486,18 +507,22 @@ class RoadParticleFilter:
             d2 = np.einsum("ij,ij->i", delta, delta)
             gps_term = np.exp(-d2 / (2 * sigma**2))
             self.last_gps_likelihood = float(gps_term.max())
-            likelihood *= gps_term
+            log_likelihood -= d2 / (2 * sigma**2)
 
             if gps_course_rad is not None and (gps_speed or 0.0) >= self.cfg.gps.min_speed_for_course_ms:
                 course_error = np.asarray(wrap_angle(self.psi - gps_course_rad), dtype=float)
-                likelihood *= np.exp(-(course_error**2) / (2 * (self.pf.sigma_heading_rad * 1.5) ** 2))
+                log_likelihood -= course_error**2 / (2 * (self.pf.sigma_heading_rad * 1.5)**2)
 
             if gps_speed is not None and gps_speed >= 0:
-                likelihood *= np.exp(
-                    -((self.v - gps_speed) ** 2) / (2 * self.pf.sigma_gps_speed_ms**2)
-                )
+                log_likelihood -= (self.v - gps_speed)**2 / (2 * self.pf.sigma_gps_speed_ms**2)
 
-        self.w = normalize_weights(self.w * likelihood)
+        with np.errstate(divide="ignore"):
+            log_weights = np.log(self.w) + log_likelihood
+        finite = np.isfinite(log_weights)
+        if np.any(finite):
+            self.w = normalize_weights(np.exp(log_weights - np.max(log_weights[finite])))
+        else:
+            self.w = normalize_weights(np.zeros_like(self.w))
         self.map_likelihood[:] = 1.0
 
     def zero_velocity_update(self, max_speed_ms: float = 1.5) -> None:

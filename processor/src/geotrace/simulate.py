@@ -257,9 +257,20 @@ def simulate_trip(
     )
     R = quaternion_to_matrix(q_mount)
     Rt = R.T
-    a_device = a_ref @ Rt.T
+    heading_index = min(n - 1, int(IMU_HZ * spec.warmup_still_s) + 50)
+    psi0 = float(heading[heading_index])
+    delta_heading = heading - psi0
+    cd, sd = np.cos(delta_heading), np.sin(delta_heading)
+    rotating_ref = np.column_stack((
+        cd * a_ref[:, 0] + sd * a_ref[:, 1],
+        -sd * a_ref[:, 0] + cd * a_ref[:, 1], a_ref[:, 2],
+    ))
+    a_device = rotating_ref @ R
     w_device = w_ref @ Rt.T
     gravity_device = Rt @ np.array([0.0, 0.0, -1.0])
+    ch, sh = np.cos(delta_heading / 2), np.sin(delta_heading / 2)
+    w, x, y, z = q_mount
+    attitudes = np.column_stack((ch*w-sh*z, ch*x-sh*y, ch*y+sh*x, ch*z+sh*w))
 
     a_device += rng.normal(0.0, spec.accel_noise_ms2, a_device.shape) + spec.accel_bias_ms2 * Rt[:, 0]
     w_device += rng.normal(0.0, spec.gyro_noise_rads, w_device.shape) + spec.gyro_bias_rads * Rt[:, 2]
@@ -275,7 +286,7 @@ def simulate_trip(
                 user_acceleration_g=tuple(a_device[i] / G_TO_MS2),  # type: ignore[arg-type]
                 rotation_rate=tuple(w_device[i]),  # type: ignore[arg-type]
                 gravity=tuple(gravity_device + rng.normal(0, 0.004, 3)),  # type: ignore[arg-type]
-                quaternion=tuple(q_mount),  # type: ignore[arg-type]
+                quaternion=tuple(attitudes[i]),  # type: ignore[arg-type]
                 magnetic_field=tuple(rng.normal([22.0, -8.0, 41.0], 3.5)),  # type: ignore[arg-type]
                 magnetic_accuracy=1,
                 wall_time=started_at + timedelta(seconds=float(times[i])),
@@ -324,6 +335,7 @@ def simulate_trip(
         forward_axis_device=tuple(Rt @ forward_ref),  # type: ignore[arg-type]
         initial_heading_deg=heading_to_course(psi0),
         heading_source="gps_course",
+        attitude_source="rigid_mount_simulator_v2",
         still_duration_s=spec.warmup_still_s,
         captured_at=started_at,
     )

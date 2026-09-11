@@ -89,6 +89,8 @@ class ExtendedKalmanFilter:
         dt: float,
         deadband: bool = False,
         yaw_trust: float = 1.0,
+        a_vehicle: Optional[float] = None,
+        coast: bool = False,
     ) -> None:
         """``deadband`` coasts at the current speed instead of integrating an
         acceleration too small to tell apart from residual accelerometer bias
@@ -114,8 +116,14 @@ class ExtendedKalmanFilter:
             self.P[IDX_PSI, IDX_PSI] += (math.pi / 2) ** 2
             return
 
-        a_long = longitudinal_acceleration(a_world, float(self.x[IDX_PSI]))
-        F = transition_jacobian(self.x, a_long, yaw_rate, dt, self.cfg, deadband, yaw_trust)
+        a_long = longitudinal_acceleration(a_world, float(self.x[IDX_PSI])) if a_vehicle is None else a_vehicle
+        da_dpsi = (-a_world[0] * math.sin(self.heading) + a_world[1] * math.cos(self.heading)) if a_vehicle is None else 0.0
+        if coast:
+            a_long, da_dpsi, yaw_trust = float(self.x[IDX_BA]), 0.0, 0.0
+        F = transition_jacobian(self.x, a_long, yaw_rate, dt, self.cfg, deadband, yaw_trust, da_dpsi)
+        if coast:
+            F[:, IDX_BA] = 0.0
+            F[IDX_BA, IDX_BA] = 1.0
         G = noise_jacobian(self.x, dt)
         Q = process_noise(dt, self.cfg)
         self.x = propagate_state(self.x, a_long, yaw_rate, dt, self.cfg, deadband, yaw_trust)
@@ -214,7 +222,13 @@ class ExtendedKalmanFilter:
         self.P[IDX_E, IDX_E] = variance
         self.P[IDX_N, IDX_N] = variance
         if heading_rad is not None:
+            self.P[IDX_PSI, :] = 0.0
+            self.P[:, IDX_PSI] = 0.0
             self.P[IDX_PSI, IDX_PSI] = math.radians(20.0) ** 2
+        if speed is not None:
+            self.P[IDX_V, :] = 0.0
+            self.P[:, IDX_V] = 0.0
+            self.P[IDX_V, IDX_V] = 4.0
         self.P = 0.5 * (self.P + self.P.T)
 
     def inflate_for_mount_disturbance(

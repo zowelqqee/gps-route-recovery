@@ -41,6 +41,7 @@ class ParkingResult:
             "position": {"latitude": lat, "longitude": lon},
             "covariance_m2": self.covariance.round(3).tolist(),
             "confidence": round(self.confidence, 3),
+            "confidence_kind": "heuristic_score_not_calibrated_probability",
             "polygon_radius_m": round(self.polygon_radius_m, 2),
             "terminal_cluster_fixes": self.terminal_cluster_count,
             "rejected_fixes": self.rejected_fixes,
@@ -136,7 +137,7 @@ class ParkingTracker:
             return
         x, y, u, theta, ba, bw = self.state
         theta = float(wrap_angle(theta + (control.yaw_rate - bw) * control.dt))
-        a = longitudinal_acceleration(control.a_world, theta) - ba
+        a = (control.a_long if getattr(control, "a_long", None) is not None else longitudinal_acceleration(control.a_world, theta)) - ba
         ds = u * control.dt + 0.5 * a * control.dt * control.dt
         self.state[0] = x + ds * math.cos(theta)
         self.state[1] = y + ds * math.sin(theta)
@@ -166,9 +167,9 @@ class ParkingTracker:
             self.state[3] = course_to_heading(float(fix.course or 0.0))
         if fix.has_valid_speed:
             observed_speed = float(fix.speed or 0.0)
-            displacement = xy - previous
-            direction = np.array([math.cos(self.state[3]), math.sin(self.state[3])])
-            sign = -1.0 if float(np.dot(displacement, direction)) < 0 else 1.0
+            # GPS course describes direction of motion. A position innovation
+            # behind the predicted mean is not evidence of reversing.
+            sign = 1.0 if fix.has_valid_course and observed_speed >= self.cfg.parking_tracker.low_speed_ms else (-1.0 if self.state[2] < 0 else 1.0)
             self.state[2] = sign * observed_speed
 
     def _terminal_cluster(self, accepted, ended_at):

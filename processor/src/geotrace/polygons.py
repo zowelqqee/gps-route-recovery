@@ -74,10 +74,12 @@ class UncertaintySet:
     seconds_since_trusted: float = 0.0
     n_selected: int = 0
     n_particles: int = 0
+    represented_mass: Optional[float] = None
+    status: str = "UNCALIBRATED"
 
     @property
     def total_area_m2(self) -> float:
-        return float(sum(c.area_m2 for c in self.components))
+        return float(unary_union([c.geometry for c in self.components]).area)
 
     @property
     def best(self) -> Optional[BranchComponent]:
@@ -85,16 +87,20 @@ class UncertaintySet:
 
     def contains(self, xy: Sequence[float]) -> bool:
         point = shapely.points(float(xy[0]), float(xy[1]))
-        return any(shapely.contains(c.geometry, point) for c in self.components)
+        return any(shapely.covers(c.geometry, point) for c in self.components)
 
     def to_json(self, frame: LocalFrame) -> dict[str, Any]:
         return {
             "t": round(self.t, 3),
-            "confidence": self.confidence,
+            "confidence": self.confidence if self.represented_mass is None else None,
+            "target_mass": self.confidence,
+            "represented_mass": self.represented_mass,
+            "status": self.status,
             "gps_state": self.gps_state,
             "seconds_since_trusted": round(self.seconds_since_trusted, 2),
-            "particles_selected": self.n_selected,
-            "particles_total": self.n_particles,
+            "particles_selected": self.n_selected if self.represented_mass is None else None,
+            "particles_total": self.n_particles if self.represented_mass is None else None,
+            "hypotheses_total": self.n_particles if self.represented_mass is not None else None,
             "components": [
                 {
                     "component_id": c.component_id,
@@ -211,8 +217,8 @@ def build_uncertainty_set(
             continue
         member = selected[inside]
         probability = float(weights[member].sum())
-        if probability / total_selected_weight < cfg.min_component_probability:
-            continue
+        # Small disconnected modes still belong to the selected gamma mass.
+        # Dropping every mode below a display threshold can delete all of it.
         member_positions = positions[inside]
         member_weights = weights[member]
         if member_weights.sum() <= 0:
@@ -228,7 +234,7 @@ def build_uncertainty_set(
         )
         geometry = part
         if cfg.simplify_tolerance_m > 0:
-            geometry = part.simplify(cfg.simplify_tolerance_m, preserve_topology=True)
+            geometry = part.union(part.simplify(cfg.simplify_tolerance_m, preserve_topology=True))
         components.append(
             BranchComponent(
                 component_id=f"branch-{order + 1:02d}",
@@ -320,7 +326,9 @@ def uncertainty_to_geojson(
                     frame,
                     extra={
                         "t": round(item.t - t0, 3),
-                        "confidence": item.confidence,
+                        "confidence": item.confidence if item.represented_mass is None else None,
+                        "represented_mass": item.represented_mass,
+                        "status": item.status,
                         "gps_state": item.gps_state,
                     },
                 )

@@ -68,14 +68,41 @@ class ReportInputs:
     polygon_stride: int = 5
 
 
+LEGEND_REFERENCE = {
+    "synthetic": "Reference route (synthetic ground truth)",
+    "withheld_real_gps": "Reference route (real GPS, withheld)",
+}
+
+WITHHELD_GPS = "withheld_real_gps"
+"""What `reference-samples.jsonl` holds when a live import filled it.
+
+The rest of this repository only ever puts a synthetic clean track there, and
+the report says so in as many words. Real GPS that was withheld from the filters
+is a different claim - true fixes, never corrupted, but a receiver's few metres
+wide - and a report that called it "corrupted synthetically" would be stating
+something that did not happen.
+"""
+
+
+def reference_kind(trip: Trip) -> Optional[str]:
+    """"synthetic", `WITHHELD_GPS`, or None when there is no reference at all."""
+    if not trip.reference_locations:
+        return None
+    provenance = (trip.metadata.extra or {}).get("live_import")
+    if isinstance(provenance, dict) and provenance.get("reference_is") == WITHHELD_GPS:
+        return WITHHELD_GPS
+    return "synthetic"
+
+
 def _latlon_list(points: np.ndarray) -> list[list[float]]:
     return [[float(lat), float(lon)] for lat, lon in np.asarray(points).reshape(-1, 2)]
 
 
 def build_map(inputs: ReportInputs) -> folium.Map:
     result = inputs.result
+    t0 = inputs.trip.t0
     frame = result.frame
-    has_reference = bool(inputs.trip.reference_locations)
+    kind = reference_kind(inputs.trip)
 
     centre = [frame.lat0, frame.lon0]
     fmap = folium.Map(
@@ -94,11 +121,13 @@ def build_map(inputs: ReportInputs) -> folium.Map:
 
     # Corridors are drawn first so the route lines stay legible on top of them,
     # and thinned so the map does not turn into one solid purple smear.
+    road_ekf = result.algorithm == "road_ekf"
     poly_group = folium.FeatureGroup(
         name=(
-            f"{int(result.uncertainty[0].confidence * 100)}% position polygons"
+            "Local road hypotheses (limited displayed mass)" if road_ekf else
+            f"{int(result.uncertainty[0].confidence * 100)}% nominal position regions"
             if result.uncertainty
-            else "95% position polygons"
+            else "95% nominal position regions"
         ),
         show=True,
     ).add_to(fmap)
@@ -116,18 +145,20 @@ def build_map(inputs: ReportInputs) -> folium.Map:
                     "opacity": 0.45,
                 },
                 tooltip=(
-                    f"t = {item.t - inputs.trip.t0:.0f}s &middot; "
+                    f"t = {item.t - t0:.0f}s &middot; "
                     f"{component.component_id} &middot; p = {component.probability:.2f}"
+                    + (f" &middot; {item.status}; shown mass = {item.represented_mass:.2f}"
+                       if item.represented_mass is not None else "")
                     + (f" &middot; {', '.join(component.street_names)}" if component.street_names else "")
                 ),
             ).add_to(poly_group)
 
 
-    original_name = (
-        "Reference route (synthetic ground truth)"
-        if has_reference
-        else "Recorded GPS (no ground truth)"
-    )
+    original_name = {
+        "synthetic": "Reference route (synthetic ground truth)",
+        WITHHELD_GPS: "Reference route (real GPS, withheld from the filters)",
+    }.get(kind, "Recorded GPS (no ground truth)")
+    seen_name = "GPS the filters saw" if kind == WITHHELD_GPS else "Corrupted GPS"
     if inputs.original_latlon is not None and len(inputs.original_latlon):
         pts = _latlon_list(inputs.original_latlon)
         bounds.extend(pts)
@@ -139,32 +170,75 @@ def build_map(inputs: ReportInputs) -> folium.Map:
     if inputs.corrupted_latlon is not None and len(inputs.corrupted_latlon):
         pts = _latlon_list(inputs.corrupted_latlon)
         bounds.extend(pts)
-        group = folium.FeatureGroup(name="Corrupted GPS", show=True).add_to(fmap)
+        group = folium.FeatureGroup(name=seen_name, show=True).add_to(fmap)
         folium.PolyLine(
             pts, color=COLOR_CORRUPTED, weight=3, opacity=0.8, dash_array="6,6",
-            tooltip="Corrupted GPS",
+            tooltip=seen_name,
         ).add_to(group)
 
+    # The visible result is one route layer.  Segments whose road geometry is
+    # only knowable after a later GPS recovery are appended to this same line,
+    # rather than shown as a competing second route.
+    route_group = folium.FeatureGroup(
+        name="Reconstructed route",
+        show=True,
+    ).add_to(fmap)
     track = result.primary
     if track.xy:
         pts = _latlon_list(frame.to_geo_array(track.array))
         bounds.extend(pts)
-        group = folium.FeatureGroup(
-            name="IMU route with stable GPS corrections",
-            show=True,
-        ).add_to(fmap)
-        starts = track.segment_starts + [len(pts)]
-        for i in range(len(starts) - 1):
-            segment = pts[starts[i]:starts[i + 1]]
+        geometry = track.to_geojson(frame)["geometry"]
+        segments = geometry["coordinates"] if geometry["type"] == "MultiLineString" else [geometry["coordinates"]]
+        for coords in segments:
+            segment = [[lat, lon] for lon, lat in coords]
             if segment:
                 folium.PolyLine(
-                    segment, color=COLOR_RECONSTRUCTED, weight=4, opacity=0.9,
-                    tooltip="IMU route; stable GPS corrects position but is never drawn as a route leg",
-                ).add_to(group)
+                    segment, color=COLOR_RECONSTRUCTED, weight=6, opacity=0.9,
+                    tooltip=(
+                        "Road-coordinate EKF hypothesis; breaks indicate a changed path hypothesis"
+                        if road_ekf else
+                        "GPS-corrected inertial estimate while GPS is trusted; "
+                        "walked along a connected road route during an outage"
+                    ),
+                ).add_to(route_group)
 
         road_end = pts[-1]
+        endpoint_label = ("Last available road estimate; tracking is LOST"
+            if road_ekf and result.uncertainty and result.uncertainty[-1].status == "LOST"
+            else "Reconstructed route endpoint")
         folium.CircleMarker(road_end, radius=7, color=COLOR_RECONSTRUCTED, fill=True,
-                            tooltip="IMU route endpoint").add_to(group)
+                            tooltip=endpoint_label).add_to(route_group)
+
+    posterior = result.tracks.get("road_posterior")
+    if posterior is not None and posterior.xy:
+        posterior_group = folium.FeatureGroup(name="Road posterior (pointwise hypothesis)", show=False).add_to(fmap)
+        folium.PolyLine(_latlon_list(frame.to_geo_array(posterior.array)), color="#bf6b21",
+                        weight=3, dash_array="5,5", tooltip="Most supported road position at each timestamp; branch changes are possible").add_to(posterior_group)
+
+    # A recovered GPS fix supplies the far endpoint of an outage.  The graph
+    # can then expose the connected road geometry between that point and the
+    # final causal IMU position, but cannot honestly assign timestamps within
+    # it.  Render it as part of the single final route, with the distinction
+    # retained only in its tooltip.
+    if result.road_reconciliations:
+        # A quality monitor may briefly lose and regain trust many times.
+        # Those re-anchors are corrections to one route, not evidence that the
+        # car took an alternative route.  Only the principal (longest) missing
+        # interval is allowed to complete the visible final route.  In this
+        # recording it is the GPS-free crossing of Kantemirovsky Bridge.
+        item = max(result.road_reconciliations, key=lambda route: route.length_m)
+        pts = _latlon_list(frame.to_geo_array(item.coords))
+        bounds.extend(pts)
+        folium.PolyLine(
+            pts,
+            color=COLOR_RECONSTRUCTED,
+            weight=6,
+            opacity=0.95,
+            tooltip=(
+                f"Connected road route, {item.length_m:.0f} m; "
+                "resolved after GPS recovery, not timed by IMU"
+            ),
+        ).add_to(route_group)
 
     parking = result.parking_result
     if parking is not None:
@@ -238,7 +312,7 @@ def build_map(inputs: ReportInputs) -> folium.Map:
             for label, t_rel in (("outage start", window["start_s"]), ("outage end", window["end_s"])):
                 if estimate_times.size == 0:
                     continue
-                i = int(np.argmin(np.abs(estimate_times - (inputs.trip.t0 + t_rel))))
+                i = int(np.argmin(np.abs(estimate_times - (t0 + t_rel))))
                 folium.Marker(
                     [float(estimate_geo[i][0]), float(estimate_geo[i][1])],
                     tooltip=f"{label}: t = {t_rel:.0f}s",
@@ -427,7 +501,27 @@ def build_report(inputs: ReportInputs, output: str | Path) -> Path:
     trip = inputs.trip
     result = inputs.result
     metrics = inputs.metrics
-    has_reference = bool(trip.reference_locations)
+    kind = reference_kind(trip)
+    has_reference = kind is not None
+    road_ekf = result.algorithm == "road_ekf"
+    polygon_label = ("Local road hypotheses" if road_ekf else "Nominal position regions")
+    uncertainty_note = (
+        "Each road hypothesis has a short, fixed-width corridor. Only a limited subset is displayed; "
+        "the tooltip reports its conditional model mass. AMBIGUOUS means the route is unresolved; "
+        "LOST means no position is available. These regions do not promise 95% coverage."
+        if road_ekf else
+        "Uncertainty is model-based and has not been calibrated to guarantee coverage. "
+        "The continuous displayed route can differ from the road posterior; see the separate metrics."
+    )
+    road_status_html = ""
+    if road_ekf and result.uncertainty:
+        final_region = result.uncertainty[-1]
+        road_status_html = (
+            '<div class="banner warn">Final road state: '
+            f'<strong>{html.escape(final_region.status)}</strong>. '
+            f'Displayed model mass: {final_region.represented_mass:.1%}. '
+            'Position error below is measured only where a position was available.</div>'
+        )
 
     fmap = build_map(inputs)
     map_html = fmap.get_root().render()
@@ -456,14 +550,23 @@ def build_report(inputs: ReportInputs, output: str | Path) -> Path:
         <div class="tablewrap"><table><thead><tr><th>kind</th><th>start, s</th><th>duration, s</th>
         <th>parameters</th><th>fixes affected</th></tr></thead><tbody>{rows}</tbody></table></div>"""
 
-    truth_banner = (
-        '<div class="banner ok">This trip was corrupted synthetically, so the green '
-        "line is a genuine reference track and the error numbers below are real "
-        "measurements against it.</div>"
-        if has_reference
-        else '<div class="banner warn">This is a real recording. There is no ground '
+    truth_banner = {
+        "synthetic": (
+            '<div class="banner ok">This trip was corrupted synthetically, so the green '
+            "line is a genuine reference track and the error numbers below are real "
+            "measurements against it.</div>"
+        ),
+        WITHHELD_GPS: (
+            '<div class="banner ok">The green line is real GPS that was withheld from '
+            "every filter, not a synthetic track: the recording is genuine and the "
+            "error numbers below are measured against it. It carries a receiver's own "
+            "few metres of error, so it is a yardstick rather than survey truth.</div>"
+        ),
+    }.get(
+        kind,
+        '<div class="banner warn">This is a real recording. There is no ground '
         "truth for the period when GPS failed, so position error is undefined and "
-        "is reported as n/a. The blue line is a probabilistic estimate.</div>"
+        "is reported as n/a. The blue line is a probabilistic estimate.</div>",
     )
 
     parking_html = ""
@@ -560,14 +663,17 @@ def build_report(inputs: ReportInputs, output: str | Path) -> Path:
  {len(trip.motions)} motion samples &middot; algorithm
  <code>{html.escape(result.algorithm)}</code> &middot; seed {result.diagnostics.get('seed')}</p>
 {truth_banner}
+{road_status_html}
+<p class="muted">{uncertainty_note}</p>
 
 <div class="card">
   <div class="legend">
     <span><i class="swatch" style="background:{COLOR_ORIGINAL}"></i>
-      {"Reference route (synthetic ground truth)" if has_reference else "Recorded GPS"}</span>
-    <span><i class="swatch" style="background:{COLOR_CORRUPTED}"></i> Corrupted GPS</span>
+      {LEGEND_REFERENCE.get(kind, "Recorded GPS")}</span>
+    <span><i class="swatch" style="background:{COLOR_CORRUPTED}"></i>
+      {"GPS the filters saw" if kind == WITHHELD_GPS else "Corrupted GPS"}</span>
     <span><i class="swatch" style="background:{COLOR_RECONSTRUCTED}"></i> Reconstructed route (estimate)</span>
-    <span><i class="swatch" style="background:{COLOR_POLYGON};height:11px;opacity:.35"></i> 95% position polygons</span>
+    <span><i class="swatch" style="background:{COLOR_POLYGON};height:11px;opacity:.35"></i> {polygon_label}</span>
     <span><i class="dot" style="background:{COLOR_REJECTED}"></i> Rejected GPS fix</span>
   </div>
   <p class="muted" style="margin:6px 0 12px">Layers can be switched on and off in the control at the top right of the map.</p>
@@ -578,6 +684,7 @@ def build_report(inputs: ReportInputs, output: str | Path) -> Path:
   <h3 style="margin-top:0">Headline numbers</h3>
   <div class="metrics">
     {_metric("mean error", error.get("mean_m"), " m")}
+    {_metric("estimate availability", error.get("availability_fraction")) if road_ekf else ""}
     {_metric("median error", error.get("median_m"), " m")}
     {_metric("95th percentile", error.get("p95_m"), " m")}
     {_metric("max error", error.get("max_m"), " m")}

@@ -225,7 +225,27 @@ class MountCalibration:
     """Vehicle heading at t0, from a trusted GPS course if one was available."""
 
     heading_source: str = "unknown"
-    """"gps_course" | "magnetometer" | "unknown"."""
+    """"gps_course" | "gps_course_window" | "magnetometer" | "unknown".
+
+    "gps_course_window" means the recorder averaged the heading over a window
+    of fixes rather than reading one fix's course, and the pipeline takes it as
+    given instead of re-deriving it."""
+
+    attitude_source: str = "unknown"
+    """How `quaternion` on each motion sample was produced.
+
+    "accelerometer_levelled_ahrs" is a claim with consequences. Such a filter
+    keeps its idea of "down" honest by steering it toward the measured specific
+    force - which works because gravity dominates on average, and fails while
+    the vehicle accelerates, because sustained forward acceleration is
+    indistinguishable from a nose-up tilt. The filter slowly leans into it and
+    the gravity subtraction then cancels the very acceleration being measured.
+    On the vehicle logger this costs half the signal at a 30 s timescale.
+
+    It is recoverable: the lean is a rotation the gyro never reported, so
+    differencing the two exposes it (see `motion_model.leveling_correction`).
+    CoreMotion is left as "unknown" - Apple fuses more sensors and the same
+    correction is not known to apply."""
 
     still_duration_s: float = 0.0
     captured_at: Optional[datetime] = None
@@ -239,6 +259,7 @@ class MountCalibration:
             forward_axis_device=tuple(fwd) if fwd else None,  # type: ignore[arg-type]
             initial_heading_deg=obj.get("initial_heading_deg"),
             heading_source=obj.get("heading_source", "unknown"),
+            attitude_source=obj.get("attitude_source", "unknown"),
             still_duration_s=float(obj.get("still_duration_s", 0.0)),
             captured_at=_parse_iso(obj.get("captured_at")),
         )
@@ -254,6 +275,7 @@ class MountCalibration:
                 None if self.initial_heading_deg is None else _f(self.initial_heading_deg)
             ),
             "heading_source": self.heading_source,
+            "attitude_source": self.attitude_source,
             "still_duration_s": _f(self.still_duration_s),
             "captured_at": _iso(self.captured_at),
         }

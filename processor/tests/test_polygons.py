@@ -192,12 +192,12 @@ def test_a_cloud_still_straddling_the_junction_is_one_connected_region(
     assert len(result.components) == 1
 
 
-def test_tiny_components_are_dropped(fork_network: RoadNetwork) -> None:
+def test_tiny_components_keep_the_selected_probability_mass(fork_network: RoadNetwork) -> None:
     edge_idx, s, weights = _fork_cloud(fork_network, weight_a=0.999, n=2000)
     cfg = PolygonConfig(min_component_probability=0.05)
     result = build_uncertainty_set(fork_network, edge_idx, s, weights, cfg,
                                    seconds_since_trusted=30.0)
-    assert len(result.components) == 1
+    assert sum(c.probability for c in result.components) >= cfg.confidence - 1e-12
 
 
 # ------------------------------------------------------------ point estimate

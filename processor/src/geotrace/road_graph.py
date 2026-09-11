@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import warnings
+from heapq import heappop, heappush
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -22,6 +23,7 @@ from typing import Any, Iterable, Optional, Sequence
 import networkx as nx
 import numpy as np
 from shapely.geometry import LineString, Point
+from shapely.ops import substring
 from shapely.strtree import STRtree
 
 from geotrace.coordinates import LocalFrame
@@ -350,6 +352,24 @@ class Edge:
         return float(self.bearings[0])
 
 
+@dataclass(frozen=True)
+class RoadRoute:
+    """A directed, graph-connected route between two snapped positions.
+
+    This is deliberately a *topological* route: its geometry says which road
+    connects two known endpoints, not how fast the vehicle travelled over each
+    metre.  It is therefore useful for filling an IMU outage retrospectively
+    once GPS has recovered, without pretending that the IMU measured the
+    missing along-road distance.
+    """
+
+    coords: np.ndarray
+    length_m: float
+    start_offset_m: float
+    end_offset_m: float
+    edge_indices: tuple[int, ...]
+
+
 def _segment_bearings(coords: np.ndarray) -> np.ndarray:
     deltas = np.diff(coords, axis=0)
     return np.arctan2(deltas[:, 1], deltas[:, 0])
@@ -631,6 +651,100 @@ class RoadNetwork:
                 best = (index, s, offset)
         return best
 
+    def route_between(
+        self,
+        start: Sequence[float],
+        end: Sequence[float],
+        max_snap_m: float = 40.0,
+        candidates: int = 5,
+        max_edges: int = 4096,
+    ) -> Optional[RoadRoute]:
+        """Shortest legal directed route between two nearby road positions.
+
+        The caller supplies observed endpoints.  This method only resolves the
+        road geometry between them; it never uses elapsed time or invents a
+        speed.  Candidate edges and turn restrictions are both considered so
+        a route cannot silently cross a river or drive the wrong way along a
+        one-way street.
+        """
+        start_options = []
+        end_options = []
+        for index in self.nearest_edges(start, k=candidates, radius=max_snap_m):
+            s, offset = self.project(start, index)
+            if offset <= max_snap_m:
+                start_options.append((int(index), float(s), float(offset)))
+        for index in self.nearest_edges(end, k=candidates, radius=max_snap_m):
+            s, offset = self.project(end, index)
+            if offset <= max_snap_m:
+                end_options.append((int(index), float(s), float(offset)))
+        if not start_options or not end_options:
+            return None
+
+        best: Optional[tuple[float, list[int], float, float, float, float]] = None
+        for start_edge, start_s, start_offset in start_options:
+            for end_edge, end_s, end_offset in end_options:
+                found = self._route_edges(start_edge, start_s, end_edge, end_s, max_edges)
+                if found is None:
+                    continue
+                length, edges = found
+                score = length + start_offset + end_offset
+                if best is None or score < best[0]:
+                    best = (score, edges, start_s, end_s, start_offset, end_offset)
+        if best is None:
+            return None
+        _score, edge_indices, start_s, end_s, start_offset, end_offset = best
+        pieces: list[np.ndarray] = []
+        for order, index in enumerate(edge_indices):
+            edge = self.edges[index]
+            lo = start_s if order == 0 else 0.0
+            hi = end_s if order == len(edge_indices) - 1 else edge.length
+            piece = substring(edge.line, lo, hi)
+            if piece.is_empty:
+                continue
+            coords = np.asarray(piece.coords, dtype=float)
+            if len(coords) and pieces and np.allclose(pieces[-1][-1], coords[0]):
+                coords = coords[1:]
+            if len(coords):
+                pieces.append(coords)
+        if not pieces:
+            return None
+        coords = np.vstack(pieces)
+        return RoadRoute(
+            coords=coords,
+            length_m=float(np.linalg.norm(np.diff(coords, axis=0), axis=1).sum()),
+            start_offset_m=start_offset,
+            end_offset_m=end_offset,
+            edge_indices=tuple(edge_indices),
+        )
+
+    def _route_edges(
+        self, start_edge: int, start_s: float, end_edge: int, end_s: float, max_edges: int
+    ) -> Optional[tuple[float, list[int]]]:
+        """Dijkstra over directed edges, retaining enough history for turns."""
+        # A cost to the start of the first edge of ``-start_s`` makes the cost
+        # to any point on it simply ``s - start_s``.  The same arithmetic then
+        # applies unchanged to all successor edges.
+        queue: list[tuple[float, int, tuple[int, ...], tuple[int, ...]]] = [
+            (-start_s, start_edge, (start_edge,), (start_edge,))
+        ]
+        best_cost: dict[tuple[int, tuple[int, ...]], float] = {}
+        visited = 0
+        while queue and visited < max_edges:
+            cost, edge_index, history, path = heappop(queue)
+            key = (edge_index, history)
+            if cost >= best_cost.get(key, float("inf")):
+                continue
+            best_cost[key] = cost
+            visited += 1
+            if edge_index == end_edge and (len(path) > 1 or end_s >= start_s):
+                return cost + end_s, list(path)
+            next_cost = cost + float(self.edges[edge_index].length)
+            for successor in self.allowed_successors(edge_index, history, allow_uturn=False):
+                successor = int(successor)
+                next_history = (history + (successor,))[-self.restriction_history_limit :]
+                heappush(queue, (next_cost, successor, next_history, path + (successor,)))
+        return None
+
     def positions(self, edge_indices: np.ndarray, s_values: np.ndarray) -> np.ndarray:
         """Vectorised (edge, s) -> (N, 2) local positions."""
         out = np.empty((len(edge_indices), 2))
@@ -718,6 +832,62 @@ class RoadNetwork:
             ]
             setattr(self, key, cached)
         return cached
+
+    def reachable_within_distance(
+        self,
+        start_edge: int,
+        s: float,
+        budget_m: float,
+        history: Sequence[int] = (),
+        max_edges: int = 512,
+    ) -> dict[int, tuple[float, int]]:
+        """``edge -> (distance from (start_edge, s), first hop taken)``.
+
+        A distance-budgeted walk over `allowed_successors`, so one-way streets
+        and turn restrictions are honoured - a *displayed* route must not be
+        walked the wrong way down a street the particles themselves are
+        forbidden to take.
+
+        The budget is a distance and not a hop count on purpose: one OSM hop is
+        ten metres inside a junction and half a kilometre along an embankment,
+        so a hop limit means completely different physics in different places,
+        while a metre budget means the same thing everywhere - how far the car
+        could actually have driven.
+
+        ``start_edge`` always maps to ``(0.0, start_edge)``, however small the
+        budget. The first-hop label is what lets a caller sort particle weight
+        into "which way from here" buckets in one pass. ``max_edges`` bounds a
+        dense graph explored with a generous budget.
+        """
+        start = int(start_edge)
+        remaining_on_start = max(0.0, float(self.edges[start].length) - float(s))
+        out: dict[int, tuple[float, int]] = {start: (0.0, start)}
+        budget = max(0.0, float(budget_m))
+        # (edge, distance to the far end of it, first hop, history for restrictions)
+        frontier: list[tuple[int, float, int, tuple[int, ...]]] = [
+            (start, remaining_on_start, -1, tuple(int(h) for h in history) or (start,))
+        ]
+        while frontier and len(out) < max_edges:
+            nxt: list[tuple[int, float, int, tuple[int, ...]]] = []
+            for edge, spent, first_hop, hist in frontier:
+                if spent > budget:
+                    continue
+                for successor in self.allowed_successors(edge, hist, allow_uturn=False):
+                    nxt_edge = int(successor)
+                    hop = nxt_edge if first_hop < 0 else first_hop
+                    if nxt_edge in out and out[nxt_edge][0] <= spent:
+                        continue
+                    out[nxt_edge] = (spent, hop)
+                    nxt.append(
+                        (
+                            nxt_edge,
+                            spent + float(self.edges[nxt_edge].length),
+                            hop,
+                            (hist + (nxt_edge,))[-self.restriction_history_limit :],
+                        )
+                    )
+            frontier = nxt
+        return out
 
     @property
     def edge_lengths(self) -> np.ndarray:
